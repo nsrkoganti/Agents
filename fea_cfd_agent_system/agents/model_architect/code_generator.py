@@ -10,7 +10,7 @@ import tempfile
 import importlib.util
 from pathlib import Path
 from loguru import logger
-from langchain_anthropic import ChatAnthropic
+from agents.shared.llm_factory import get_verifier_llm
 from agents.model_architect.architecture_dna import ArchitectureDNA
 
 
@@ -22,10 +22,7 @@ class CodeGenerator:
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-        )
+        self.llm = get_verifier_llm(max_tokens=4000)
 
     def generate(self, dna: ArchitectureDNA,
                   problem_card_dict: dict) -> str:

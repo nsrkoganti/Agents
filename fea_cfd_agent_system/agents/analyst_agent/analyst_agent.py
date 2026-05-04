@@ -5,7 +5,7 @@ a Problem Card that drives all downstream agents.
 
 import json
 from loguru import logger
-from langchain_anthropic import ChatAnthropic
+from agents.shared.llm_factory import get_dev_llm
 from agents.orchestrator.agent_state import (
     AgentSystemState, AgentStatus, ProblemCard,
     PhysicsType, MeshType, ProblemType
@@ -25,7 +25,7 @@ class AnalystAgent:
 
     def __init__(self, config: dict):
         self.config = config
-        self.llm = ChatAnthropic(model="claude-sonnet-4-20250514", max_tokens=2000)
+        self.llm = get_dev_llm(max_tokens=2000)
 
     def run(self, state: AgentSystemState) -> AgentSystemState:
         logger.info("Analyst Agent: analyzing dataset")

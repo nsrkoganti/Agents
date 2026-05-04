@@ -7,6 +7,15 @@ system:
   seed: 42
   log_level: "INFO"
 
+# LLM configuration
+# dev agents (analyst, selector, iteration, architect, discovery) → OpenRouter
+# verifier (code_generator) → Claude direct
+llm:
+  dev_provider: "openrouter"                    # "openrouter" | "anthropic"
+  dev_model: "anthropic/claude-sonnet-4"        # any OpenRouter model slug
+  verifier_provider: "anthropic"
+  verifier_model: "claude-sonnet-4-20250514"
+
 # Accuracy thresholds — model cannot be saved unless these are met
 evaluation:
   thresholds:

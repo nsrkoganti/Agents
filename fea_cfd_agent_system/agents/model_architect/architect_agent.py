@@ -18,7 +18,7 @@ import torch
 import datetime
 from typing import Optional, Tuple
 from loguru import logger
-from langchain_anthropic import ChatAnthropic
+from agents.shared.llm_factory import get_dev_llm
 
 from agents.orchestrator.agent_state import (
     AgentSystemState, AgentStatus, ModelCandidate
@@ -44,7 +44,7 @@ class ArchitectAgent:
     def __init__(self, config: dict, db: RunDatabase):
         self.config    = config
         self.db        = db
-        self.llm       = ChatAnthropic(model="claude-sonnet-4-20250514", max_tokens=3000)
+        self.llm       = get_dev_llm(max_tokens=3000)
         self.generator = CodeGenerator()
         self.nas       = NASEngine(config)
 
