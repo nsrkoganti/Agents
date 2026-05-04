@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+mlruns/
+memory/experience.db
+models/saved/*/
+logs/*.log
+data/raw/
+data/processed/
+data/exports/
+*.pt
+*.onnx

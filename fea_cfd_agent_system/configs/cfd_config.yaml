@@ -1,0 +1,23 @@
+# CFD-specific configuration
+
+physics_type: "CFD_incompressible_turbulent"
+
+turbulence:
+  model: "k-omega_SST"
+  y_plus_max: 1.0          # For low-Re treatment
+  tke_min: 0.0
+  omega_min: 0.0
+  intensity_min: 0.001
+  intensity_max: 0.50
+
+cfd:
+  continuity_threshold: 1.0e-6
+  momentum_threshold: 1.0e-4
+  mass_conservation_error_max: 0.0001
+  bc_error_threshold: 1.0e-6
+
+geometry:
+  description: "rectangular duct 8mm wall, 15mm and 20mm radii corners"
+  wall_thickness_mm: 8
+  corner_radius_small_mm: 15
+  corner_radius_large_mm: 20

@@ -1,0 +1,134 @@
+# Complete model registry — ALL known models for FEA/CFD ML
+# Agent reads this and scores every model before selecting
+
+models:
+
+  - name: "FNO"
+    family: "neural_operator"
+    github_url: "https://github.com/neuraloperator/neuraloperator"
+    install_cmd: "pip install neuraloperator"
+    paper: "Li et al. ICLR 2021"
+    mesh_requirement: "structured"
+    min_data_samples: 200
+    supports_field_output: true
+    has_builtin_physics_loss: false
+    benchmark_l2_error: 0.025
+    inference_speed_score: 9
+    code_maturity_stars: 2000
+
+  - name: "F-FNO"
+    family: "neural_operator"
+    github_url: "https://github.com/neuraloperator/neuraloperator"
+    install_cmd: "pip install neuraloperator"
+    paper: "Tran et al. ICLR 2023"
+    mesh_requirement: "structured"
+    min_data_samples: 200
+    supports_field_output: true
+    has_builtin_physics_loss: false
+    benchmark_l2_error: 0.022
+    inference_speed_score: 9
+    code_maturity_stars: 2000
+
+  - name: "GINO"
+    family: "neural_operator"
+    github_url: "https://github.com/neuraloperator/neuraloperator"
+    install_cmd: "pip install neuraloperator"
+    paper: "Li et al. NeurIPS 2023"
+    mesh_requirement: "unstructured"
+    min_data_samples: 500
+    supports_field_output: true
+    has_builtin_physics_loss: false
+    benchmark_l2_error: 0.031
+    inference_speed_score: 7
+    code_maturity_stars: 2000
+
+  - name: "DeepONet"
+    family: "neural_operator"
+    github_url: "https://github.com/lululxvi/deepxde"
+    install_cmd: "pip install deepxde"
+    paper: "Lu et al. Nature MI 2021"
+    mesh_requirement: "any"
+    min_data_samples: 100
+    supports_field_output: true
+    has_builtin_physics_loss: false
+    benchmark_l2_error: 0.012
+    inference_speed_score: 8
+    code_maturity_stars: 1800
+
+  - name: "Transolver"
+    family: "transformer"
+    github_url: "https://github.com/thuml/Transolver"
+    install_cmd: "git clone https://github.com/thuml/Transolver && pip install -e ."
+    paper: "Wu et al. ICML 2024"
+    mesh_requirement: "any"
+    min_data_samples: 300
+    supports_field_output: true
+    has_builtin_physics_loss: false
+    benchmark_l2_error: 0.018
+    inference_speed_score: 9
+    code_maturity_stars: 850
+
+  - name: "MeshGraphNet"
+    family: "gnn"
+    github_url: "https://github.com/NVIDIA/physicsnemo"
+    install_cmd: "pip install physicsnemo"
+    paper: "Pfaff et al. ICLR 2021"
+    mesh_requirement: "unstructured"
+    min_data_samples: 200
+    supports_field_output: true
+    has_builtin_physics_loss: false
+    benchmark_l2_error: 0.035
+    inference_speed_score: 6
+    code_maturity_stars: 3200
+
+  - name: "PINN"
+    family: "physics_informed"
+    github_url: "https://github.com/lululxvi/deepxde"
+    install_cmd: "pip install deepxde"
+    paper: "Raissi et al. JCP 2019"
+    mesh_requirement: "any"
+    min_data_samples: 0
+    supports_field_output: true
+    has_builtin_physics_loss: true
+    benchmark_l2_error: 0.06
+    inference_speed_score: 3
+    code_maturity_stars: 1800
+
+  - name: "PINO"
+    family: "physics_informed"
+    github_url: "https://github.com/neuraloperator/physics_informed"
+    install_cmd: "git clone https://github.com/neuraloperator/physics_informed"
+    paper: "Li et al. 2021"
+    mesh_requirement: "structured"
+    min_data_samples: 100
+    supports_field_output: true
+    has_builtin_physics_loss: true
+    benchmark_l2_error: 0.02
+    inference_speed_score: 5
+    code_maturity_stars: 420
+
+  - name: "GPR"
+    family: "classical"
+    github_url: "https://github.com/cornellius-gp/gpytorch"
+    install_cmd: "pip install gpytorch"
+    paper: "Gardner et al. NeurIPS 2018"
+    mesh_requirement: "any"
+    min_data_samples: 10
+    supports_field_output: false
+    has_builtin_physics_loss: false
+    benchmark_l2_error: 0.05
+    inference_speed_score: 10
+    code_maturity_stars: 3100
+
+  - name: "XGBoost"
+    family: "classical"
+    github_url: "https://github.com/dmlc/xgboost"
+    install_cmd: "pip install xgboost"
+    paper: "Chen & Guestrin KDD 2016"
+    mesh_requirement: "any"
+    min_data_samples: 50
+    supports_field_output: false
+    has_builtin_physics_loss: false
+    benchmark_l2_error: 0.08
+    inference_speed_score: 10
+    code_maturity_stars: 26000

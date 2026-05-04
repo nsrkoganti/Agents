@@ -1,0 +1,21 @@
+self_learning:
+  database_path: "memory/experience.db"
+  enable_self_learning: true
+
+  knowledge_base:
+    use_historical_model_order: true
+    use_historical_lambda_weights: true
+    similar_problem_threshold: 200
+
+  discovery:
+    enabled: true
+    schedule: "weekly"
+    max_papers_per_run: 50
+    arxiv_queries:
+      - "CFD surrogate neural operator mesh"
+      - "FEA structural surrogate deep learning"
+      - "physics-informed neural network PDE unstructured"
+      - "transformer PDE solver geometry"
+      - "graph neural network fluid mechanics"
+    min_relevance_keywords: 3
+    auto_add_to_registry: true

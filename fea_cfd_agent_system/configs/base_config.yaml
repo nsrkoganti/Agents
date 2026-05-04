@@ -1,0 +1,67 @@
+# Base configuration for all runs
+
+system:
+  name: "FEA_CFD_ML_Agent_System"
+  version: "1.0.0"
+  device: "cuda"
+  seed: 42
+  log_level: "INFO"
+
+# Accuracy thresholds — model cannot be saved unless these are met
+evaluation:
+  thresholds:
+    r2_min: 0.92
+    rel_l2_max: 0.05
+    max_point_error_max: 0.15
+    physics_residual_max: 1.0e-3
+    mass_conservation_error_max: 0.001
+    bc_error_max: 1.0e-6
+    inference_time_ms_max: 100.0
+
+# Iteration control
+iteration:
+  max_attempts_per_model: 3
+  max_models_to_try: 8
+  total_max_attempts: 24
+
+# Physics agent thresholds
+physics:
+  cfd:
+    continuity_threshold: 1.0e-6
+    momentum_threshold: 1.0e-4
+    energy_threshold: 1.0e-4
+    mass_conservation_error_max: 0.0001
+  fea:
+    equilibrium_threshold: 1.0e-5
+    compatibility_threshold: 1.0e-7
+    symmetry_threshold: 1.0e-8
+    strain_energy_error_max: 0.01
+
+# Training defaults
+training:
+  max_epochs: 2000
+  early_stopping_patience: 20
+  gradient_clip_max_norm: 1.0
+  default_lr: 1.0e-3
+
+# Model registry
+selector:
+  score_weights:
+    CFD_incompressible_turbulent:
+      physics_fit: 0.25
+      mesh_fit: 0.20
+      data_efficiency: 0.15
+      accuracy: 0.15
+      physics_law: 0.10
+      speed: 0.08
+      code_maturity: 0.05
+      compute: 0.02
+    FEA_static_linear:
+      physics_fit: 0.25
+      mesh_fit: 0.20
+      data_efficiency: 0.15
+      accuracy: 0.15
+      physics_law: 0.10
+      speed: 0.05
+      code_maturity: 0.05
+      compute: 0.05
