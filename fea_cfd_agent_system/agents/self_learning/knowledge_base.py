@@ -9,11 +9,7 @@ Answers questions like:
 import json
 from typing import Optional, Dict, List
 from loguru import logger
-try:
-    from langchain_anthropic import ChatAnthropic
-except ImportError:
-    ChatAnthropic = None
-
+from agents.shared.llm_factory import get_dev_llm
 from memory.run_database import RunDatabase
 
 
@@ -26,14 +22,10 @@ class KnowledgeBase:
     def __init__(self, config: dict, db: RunDatabase):
         self.config = config
         self.db     = db
-        self.llm    = None
-        if ChatAnthropic is not None:
-            try:
-                self.llm = ChatAnthropic(
-                    model="claude-sonnet-4-20250514", max_tokens=1000
-                )
-            except Exception:
-                pass
+        try:
+            self.llm = get_dev_llm(max_tokens=1000)
+        except Exception:
+            self.llm = None
 
     def get_model_recommendation(self, state) -> Optional[Dict]:
         """Return best historical model for this problem type+mesh combination."""

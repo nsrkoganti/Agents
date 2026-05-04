@@ -5,7 +5,7 @@ Decides: fix same model, retry with new config, or move to next model.
 
 import json
 from loguru import logger
-from langchain_anthropic import ChatAnthropic
+from agents.shared.llm_factory import get_dev_llm
 from agents.orchestrator.agent_state import (
     AgentSystemState, AgentStatus, IterationRecord
 )
@@ -19,7 +19,7 @@ class IterationAgent:
 
     def __init__(self, config: dict):
         self.config      = config
-        self.llm         = ChatAnthropic(model="claude-sonnet-4-20250514", max_tokens=1000)
+        self.llm         = get_dev_llm(max_tokens=1000)
         self.max_attempts  = config.get("iteration", {}).get("total_max_attempts", 24)
         self.max_per_model = config.get("iteration", {}).get("max_attempts_per_model", 3)
 

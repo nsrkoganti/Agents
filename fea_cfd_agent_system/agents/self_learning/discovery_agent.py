@@ -10,7 +10,7 @@ import sqlite3
 import datetime
 from typing import List, Dict
 from loguru import logger
-from langchain_anthropic import ChatAnthropic
+from agents.shared.llm_factory import get_dev_llm
 from memory.run_database import RunDatabase
 
 try:
@@ -40,7 +40,7 @@ class DiscoveryAgent:
 
     def __init__(self, db: RunDatabase):
         self.db  = db
-        self.llm = ChatAnthropic(model="claude-sonnet-4-20250514", max_tokens=2000)
+        self.llm = get_dev_llm(max_tokens=2000)
 
     def run_discovery(self, max_papers: int = 30) -> List[Dict]:
         """Scan arXiv for new models."""
