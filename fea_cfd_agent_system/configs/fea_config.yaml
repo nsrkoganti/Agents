@@ -1,0 +1,14 @@
+# FEA-specific configuration
+
+physics_type: "FEA_static_linear"
+
+fea:
+  equilibrium_threshold: 1.0e-5
+  compatibility_threshold: 1.0e-7
+  symmetry_threshold: 1.0e-8
+  strain_energy_error_max: 0.01
+
+material:
+  yield_strength_check: true
+  damage_variable_check: true
+  damage_bounds: [0.0, 1.0]

@@ -1,0 +1,28 @@
+architect:
+  trigger_after_attempts: 12
+  max_design_attempts: 5
+  max_code_retries: 3
+  use_nas: true
+  nas_trials: 20
+
+  dna_templates:
+    CFD_incompressible_turbulent:
+      preferred: "hybrid_transolver_pinn"
+      hidden_dim: 256
+      n_layers: 8
+      n_slices: 32
+      n_heads: 8
+    FEA_static_linear:
+      preferred: "gnn"
+      hidden_dim: 128
+      n_layers: 10
+    default:
+      preferred: "hybrid_transolver_pinn"
+      hidden_dim: 128
+      n_layers: 6
+      n_slices: 16
+
+  code_generation:
+    model: "claude-sonnet-4-20250514"
+    max_tokens: 4000
+    temperature: 0.1
