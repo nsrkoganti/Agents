@@ -4,6 +4,7 @@ Decides: fix same model, retry with new config, or move to next model.
 """
 
 import json
+import datetime
 from loguru import logger
 from agents.shared.llm_factory import get_dev_llm
 from agents.orchestrator.agent_state import (
@@ -48,8 +49,36 @@ class IterationAgent:
         state = self._apply_fix(state, fix_plan)
         state.iteration_status = AgentStatus.RUNNING
 
+        self._maybe_request_more_data(state)
+
         logger.info(f"Fix applied: {fix_plan[:120]}")
         return state
+
+    def _maybe_request_more_data(self, state: AgentSystemState) -> None:
+        """Publish REQUEST_MORE_DATA if R2 is persistently low after 6 attempts."""
+        if state.current_attempt < 6:
+            return
+        r2 = state.evaluation_result.r2_score if state.evaluation_result else 0.0
+        if r2 >= 0.5:
+            return
+        # Only request once — check existing unhandled messages
+        already_requested = any(
+            m.get("type") == "REQUEST_MORE_DATA" and not m.get("handled")
+            for m in state.agent_messages
+        )
+        if already_requested:
+            return
+        data_size = state.problem_card.data_size if state.problem_card else 0
+        state.agent_messages.append({
+            "from":      "iteration_agent",
+            "to":        "dataset_agent",
+            "type":      "REQUEST_MORE_DATA",
+            "reason":    (f"R2={r2:.2f} after {state.current_attempt} attempts — "
+                          f"need larger/better dataset (current size={data_size})"),
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "handled":   False,
+        })
+        logger.info(f"Published REQUEST_MORE_DATA (R2={r2:.2f} after {state.current_attempt} attempts)")
 
     def _diagnose_and_plan(self, state: AgentSystemState) -> str:
         eval_r = state.evaluation_result

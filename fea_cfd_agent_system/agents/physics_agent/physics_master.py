@@ -4,6 +4,7 @@ A model CANNOT be saved unless it passes ALL physics checks.
 """
 
 import concurrent.futures
+import datetime
 from loguru import logger
 from agents.orchestrator.agent_state import AgentSystemState, AgentStatus, PhysicsReport
 from agents.physics_agent.governing_equation_agent import GoverningEquationAgent
@@ -96,6 +97,9 @@ class PhysicsMasterAgent:
         state.physics_report = report
         state.physics_status = AgentStatus.PASSED if report.overall_passed else AgentStatus.FAILED
 
+        if not report.boundary_conditions_passed:
+            self._publish_insufficient_bc(state, results["bc"])
+
         logger.info(
             f"Physics: gov_eq={report.governing_equations_passed}, "
             f"bc={report.boundary_conditions_passed}, "
@@ -104,3 +108,22 @@ class PhysicsMasterAgent:
             f"overall={report.overall_passed}"
         )
         return state
+
+    def _publish_insufficient_bc(self, state: AgentSystemState, bc_result: dict) -> None:
+        """Notify dataset agent when BC data is missing."""
+        already = any(
+            m.get("type") == "INSUFFICIENT_BC_DATA" and not m.get("handled")
+            for m in state.agent_messages
+        )
+        if already:
+            return
+        state.agent_messages.append({
+            "from":      "physics_agent",
+            "to":        "dataset_agent",
+            "type":      "INSUFFICIENT_BC_DATA",
+            "missing":   bc_result.get("missing_fields", []),
+            "reason":    f"BC check failed: {bc_result.get('failure_reason', 'unknown')}",
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "handled":   False,
+        })
+        logger.info("Published INSUFFICIENT_BC_DATA to agent message bus")
