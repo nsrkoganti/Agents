@@ -8,11 +8,25 @@ system:
   log_level: "INFO"
 
 # LLM configuration
-# dev agents (analyst, selector, iteration, architect, discovery) → OpenRouter
-# verifier (code_generator) → Claude direct
+# Provider resolution order for dev LLM (first env var set wins):
+#   1. NVIDIA_API_KEY   → build.nvidia.com free NIM (set NVIDIA_MODEL to override)
+#   2. OPENROUTER_API_KEY → OpenRouter / Kilo AI   (set OPENROUTER_MODEL to override)
+#   3. fallback          → Anthropic direct
+# Verifier always uses Anthropic direct.
 llm:
-  dev_provider: "openrouter"                    # "openrouter" | "anthropic"
-  dev_model: "anthropic/claude-sonnet-4"        # any OpenRouter model slug
+  # NVIDIA NIM (free tier — 1000 credits/month, no credit card)
+  nvidia_base_url: "https://integrate.api.nvidia.com/v1"
+  nvidia_default_model: "meta/llama-3.3-70b-instruct"
+  # Alternative NVIDIA models:
+  #   nvidia/llama-3.1-nemotron-70b-instruct
+  #   mistralai/mixtral-8x22b-instruct-v0.1
+  #   google/gemma-3-27b-it
+
+  # OpenRouter / Kilo AI
+  openrouter_base_url: "https://openrouter.ai/api/v1"
+  dev_model: "anthropic/claude-sonnet-4"
+
+  # Verifier (always Anthropic direct)
   verifier_provider: "anthropic"
   verifier_model: "claude-sonnet-4-20250514"
 
