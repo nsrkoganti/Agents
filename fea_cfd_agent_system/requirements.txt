@@ -49,6 +49,10 @@ mlflow>=2.10.0
 PyGithub>=2.2.0
 requests>=2.31.0
 
+# Dataset discovery and download
+huggingface_hub>=0.21.0
+datasets>=2.18.0
+
 # arXiv discovery
 arxiv>=2.1.0
 

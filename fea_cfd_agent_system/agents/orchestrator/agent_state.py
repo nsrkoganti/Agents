@@ -220,3 +220,15 @@ class AgentSystemState:
     architect_triggered: bool = False
     custom_model_dna: Optional[dict] = None
     custom_model_code: Optional[str] = None
+
+    # Dataset search / download
+    search_datasets: bool = False
+    dataset_search_queries: List[str] = field(default_factory=list)
+    discovered_datasets: List[Dict] = field(default_factory=list)
+    selected_dataset: Optional[Dict] = None
+    dataset_download_path: str = ""
+    dataset_quality_report: Dict = field(default_factory=dict)
+    dataset_agent_status: AgentStatus = AgentStatus.PENDING
+
+    # Inter-agent message bus
+    agent_messages: List[Dict] = field(default_factory=list)

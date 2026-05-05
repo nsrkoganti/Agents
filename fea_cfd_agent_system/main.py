@@ -62,9 +62,9 @@ def run_discovery(config: dict):
 
 def run_pipeline(data_path: str, config: dict,
                   output_dir: str = "results",
-                  max_attempts: int = None) -> dict:
+                  max_attempts: int = None,
+                  search_datasets: bool = False) -> dict:
     """Run the full agent pipeline on a data file."""
-    from memory.run_database import RunDatabase
     from agents.orchestrator.master_orchestrator import MasterOrchestrator
 
     if max_attempts:
@@ -72,14 +72,13 @@ def run_pipeline(data_path: str, config: dict,
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    db = RunDatabase(config.get("db_path", "memory/experience.db"))
-
     logger.info("=" * 60)
     logger.info("FEA/CFD AUTONOMOUS ML AGENT SYSTEM")
     logger.info("=" * 60)
-    logger.info(f"Data:    {data_path}")
+    logger.info(f"Data:    {data_path or '(none — searching datasets)'}")
     logger.info(f"Output:  {output_dir}")
     logger.info(f"Max iterations: {config.get('max_attempts', 24)}")
+    logger.info(f"Search datasets: {search_datasets}")
     logger.info("=" * 60)
 
     try:
@@ -95,8 +94,8 @@ def run_pipeline(data_path: str, config: dict,
         logger.warning("MLflow not available — proceeding without experiment tracking")
 
     try:
-        orchestrator = MasterOrchestrator(config, db)
-        final_state  = orchestrator.run(data_path)
+        orchestrator = MasterOrchestrator(config)
+        final_state  = orchestrator.run(data_path, search_datasets=search_datasets)
 
         result = _summarize_result(final_state, output_dir)
 
@@ -130,24 +129,21 @@ def run_pipeline(data_path: str, config: dict,
 
 def _summarize_result(state, output_dir: str) -> dict:
     result = {
-        "success":      state.status.value in ("verified", "saved"),
-        "n_iterations": state.n_iterations,
+        "success":      state.pipeline_success,
+        "n_iterations": state.current_attempt,
         "model_name":   None,
         "r2":           None,
         "rel_l2":       None,
         "physics_ok":   False,
+        "dataset":      state.selected_dataset.get("name") if state.selected_dataset else None,
     }
 
     if state.selected_model:
         result["model_name"] = state.selected_model.name
 
-    if state.training_result:
-        result["r2"]     = state.training_result.r2_score
-        result["rel_l2"] = state.training_result.rel_l2
-
     if state.evaluation_result:
         result["r2"]     = state.evaluation_result.r2_score
-        result["rel_l2"] = state.evaluation_result.rel_l2
+        result["rel_l2"] = state.evaluation_result.rel_l2_error
 
     if state.physics_report:
         result["physics_ok"] = (
@@ -168,6 +164,8 @@ def _print_summary(result: dict, state):
     logger.info(f"Status:      {status}")
     logger.info(f"Model:       {result.get('model_name', 'N/A')}")
     logger.info(f"Iterations:  {result['n_iterations']}")
+    if result.get("dataset"):
+        logger.info(f"Dataset:     {result['dataset']}")
     if result.get("r2") is not None:
         logger.info(f"R²:          {result['r2']:.4f}")
     if result.get("rel_l2") is not None:
@@ -196,6 +194,8 @@ def parse_args():
                         help="Override max iteration attempts")
     parser.add_argument("--discover", action="store_true",
                         help="Run arXiv discovery before pipeline")
+    parser.add_argument("--search-datasets", action="store_true",
+                        help="Autonomously search and download training datasets from HuggingFace/GitHub/Zenodo")
     parser.add_argument("--log-dir", default="logs",
                         help="Log file directory")
     parser.add_argument("--db-path", default=None,
@@ -214,15 +214,18 @@ def main():
     if args.discover:
         run_discovery(config)
 
-    if not Path(args.data).exists():
+    search_datasets = getattr(args, "search_datasets", False)
+
+    if not search_datasets and not Path(args.data).exists():
         logger.error(f"Data path does not exist: {args.data}")
         sys.exit(1)
 
     result = run_pipeline(
-        data_path    = args.data,
-        config       = config,
-        output_dir   = args.output_dir,
-        max_attempts = args.max_attempts,
+        data_path       = args.data,
+        config          = config,
+        output_dir      = args.output_dir,
+        max_attempts    = args.max_attempts,
+        search_datasets = search_datasets,
     )
 
     sys.exit(0 if result.get("success") else 1)

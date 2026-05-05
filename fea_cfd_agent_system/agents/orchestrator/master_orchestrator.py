@@ -44,8 +44,12 @@ class MasterOrchestrator:
         # Self-learning components
         db_path = config.get("self_learning", {}).get("database_path", "memory/experience.db")
         self.db = RunDatabase(db_path=db_path)
-        self.knowledge_base = KnowledgeBase(self.db)
-        self.self_learning_updater = SelfLearningUpdater(self.db)
+        self.knowledge_base = KnowledgeBase(config, self.db)
+        self.self_learning_updater = SelfLearningUpdater(config, self.db)
+
+        # Dataset agent
+        from agents.dataset_agent.dataset_orchestrator import DatasetOrchestrator
+        self.dataset_orchestrator = DatasetOrchestrator(config)
 
         self.graph = self._build_graph()
 
@@ -54,6 +58,7 @@ class MasterOrchestrator:
 
         # Register all agent nodes
         graph.add_node("data_agent",           self._run_data_agent)
+        graph.add_node("dataset_orchestrator", self._run_dataset_orchestrator)
         graph.add_node("analyst_agent",        self._run_analyst_agent)
         graph.add_node("selector_agent",       self._run_selector_agent)
         graph.add_node("trainer_agent",        self._run_trainer_agent)
@@ -68,8 +73,13 @@ class MasterOrchestrator:
         # Entry point
         graph.set_entry_point("data_agent")
 
-        # Linear edges: data -> analyst -> selector -> trainer -> evaluator
-        graph.add_edge("data_agent",     "analyst_agent")
+        # data_agent -> dataset_orchestrator (if no data) OR -> analyst_agent
+        graph.add_conditional_edges(
+            "data_agent",
+            self._route_after_data_agent,
+            {"dataset_search": "dataset_orchestrator", "analyst": "analyst_agent"}
+        )
+        graph.add_edge("dataset_orchestrator", "analyst_agent")
         graph.add_edge("analyst_agent",  "selector_agent")
         graph.add_edge("selector_agent", "trainer_agent")
         graph.add_edge("trainer_agent",  "evaluator_agent")
@@ -159,11 +169,22 @@ class MasterOrchestrator:
         state.architect_triggered = True
         return architect.run(state)
 
+    def _run_dataset_orchestrator(self, state: AgentSystemState) -> AgentSystemState:
+        logger.info("=== DATASET ORCHESTRATOR ===")
+        return self.dataset_orchestrator.run(state)
+
     def _run_self_learning_update(self, state: AgentSystemState) -> AgentSystemState:
         logger.info("=== SELF-LEARNING UPDATE ===")
         return self.self_learning_updater.update(state)
 
     # ── Routing logic ──────────────────────────────────────────
+    def _route_after_data_agent(self, state: AgentSystemState) -> str:
+        if not state.data_path or state.search_datasets:
+            logger.info("No data path or search_datasets=True — routing to Dataset Orchestrator")
+            return "dataset_search"
+        logger.info("Data path provided — skipping dataset search")
+        return "analyst"
+
     def _route_after_evaluator(self, state: AgentSystemState) -> str:
         if state.evaluation_result and state.evaluation_result.passed:
             logger.info("Evaluator PASSED — routing to Physics Agent")
@@ -183,6 +204,14 @@ class MasterOrchestrator:
         if state.current_attempt >= max_total:
             logger.error("Max attempts reached — pipeline ending without success")
             return "end"
+
+        # Check message bus for REQUEST_MORE_DATA — re-run dataset search inline
+        for msg in state.agent_messages:
+            if not msg.get("handled") and msg.get("type") == "REQUEST_MORE_DATA":
+                logger.info(f"Message bus: {msg['reason']} — re-running dataset orchestrator")
+                state = self.dataset_orchestrator.run(state)
+                msg["handled"] = True
+                break
 
         # Trigger architect after 12 failed attempts if not already tried
         if (state.current_attempt >= 12 and
@@ -205,11 +234,13 @@ class MasterOrchestrator:
             return "save"
         return "iterate"
 
-    def run(self, data_path: str, software_source: str = "STAR-CCM+") -> AgentSystemState:
+    def run(self, data_path: str, software_source: str = "STAR-CCM+",
+            search_datasets: bool = False) -> AgentSystemState:
         """Run the complete pipeline."""
         initial_state = AgentSystemState(
             data_path=data_path,
             software_source=software_source,
+            search_datasets=search_datasets,
             run_id=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         )
         logger.info(f"Starting pipeline run: {initial_state.run_id}")
