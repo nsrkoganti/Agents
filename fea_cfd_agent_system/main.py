@@ -1,17 +1,17 @@
 """
-FEA/CFD Autonomous ML Agent System — CLI entry point.
+FEA Surrogate ML Agent System — CLI entry point.
 
 Usage:
-  python main.py --data path/to/data.vtk --output-dir results/
-  python main.py --data data.csv --discover              # also run arXiv discovery
-  python main.py --data data.vtk --max-attempts 12       # limit iterations
+  python main.py --data path/to/result.rst --solver ansys --physics FEA_static_linear
+  python main.py --data result.frd --solver calculix --physics FEA_dynamic
+  python main.py --search-datasets --physics FEA_static_linear
+  python main.py --data result.vtu --solver vtk --max-attempts 12 --output-dir results/
 """
 
 import argparse
 import sys
 import os
 import datetime
-import uuid
 from pathlib import Path
 from loguru import logger
 
@@ -44,38 +44,29 @@ def load_config(config_path: str = "configs/base_config.yaml") -> dict:
         return {}
 
 
-def run_discovery(config: dict):
-    """Run arXiv model discovery."""
-    logger.info("Running arXiv discovery agent...")
-    try:
-        from agents.self_learning.discovery_agent import DiscoveryAgent
-        from memory.run_database import RunDatabase
-        db = RunDatabase(config.get("db_path", "memory/experience.db"))
-        agent = DiscoveryAgent(config, db)
-        new_models = agent.discover_new_models()
-        logger.success(f"Discovery found {len(new_models)} new model(s)")
-        for m in new_models:
-            logger.info(f"  + {m.get('name', 'unknown')} ({m.get('mesh_type', '?')})")
-    except Exception as e:
-        logger.error(f"Discovery failed: {e}")
-
-
 def run_pipeline(data_path: str, config: dict,
                   output_dir: str = "results",
+                  solver: str = "auto",
+                  physics: str = "FEA_static_linear",
                   max_attempts: int = None,
                   search_datasets: bool = False) -> dict:
-    """Run the full agent pipeline on a data file."""
+    """Run the full FEA surrogate agent pipeline."""
     from agents.orchestrator.master_orchestrator import MasterOrchestrator
 
     if max_attempts:
         config["max_attempts"] = max_attempts
 
+    config["solver"]  = solver
+    config["physics"] = physics
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 60)
-    logger.info("FEA/CFD AUTONOMOUS ML AGENT SYSTEM")
+    logger.info("FEA SURROGATE ML AGENT SYSTEM")
     logger.info("=" * 60)
     logger.info(f"Data:    {data_path or '(none — searching datasets)'}")
+    logger.info(f"Solver:  {solver}")
+    logger.info(f"Physics: {physics}")
     logger.info(f"Output:  {output_dir}")
     logger.info(f"Max iterations: {config.get('max_attempts', 24)}")
     logger.info(f"Search datasets: {search_datasets}")
@@ -83,10 +74,12 @@ def run_pipeline(data_path: str, config: dict,
 
     try:
         import mlflow
-        mlflow.set_experiment("fea_cfd_agent")
+        mlflow.set_experiment("fea_surrogate_agent")
         run_name = f"run_{datetime.datetime.now().strftime('%H%M%S')}"
         mlflow.start_run(run_name=run_name)
         mlflow.log_param("data_path", data_path)
+        mlflow.log_param("solver", solver)
+        mlflow.log_param("physics", physics)
         mlflow.log_param("max_attempts", config.get("max_attempts", 24))
         use_mlflow = True
     except Exception:
@@ -147,7 +140,7 @@ def _summarize_result(state, output_dir: str) -> dict:
 
     if state.physics_report:
         result["physics_ok"] = (
-            state.physics_report.governing_equations_passed and
+            state.physics_report.equilibrium_passed and
             state.physics_report.boundary_conditions_passed
         )
 
@@ -181,21 +174,34 @@ def _print_summary(result: dict, state):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="FEA/CFD Autonomous ML Agent System",
+        description="FEA Surrogate ML Agent System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py --data model.rst --solver ansys --physics FEA_static_linear
+  python main.py --data result.odb --solver abaqus --physics FEA_static_nonlinear
+  python main.py --data output.frd --solver calculix --physics FEA_dynamic
+  python main.py --data export.vtu --solver vtk --physics thermal
+  python main.py --search-datasets --physics FEA_dynamic --output-dir results/
+        """,
     )
-    parser.add_argument("--data", required=True,
-                        help="Path to simulation data file (.vtk, .vtu, .csv, or OpenFOAM case dir)")
+    parser.add_argument("--data", default="",
+                        help="FEA result file (.rst, .odb, .frd, .vtu, .h5, .csv, .npy)")
+    parser.add_argument("--solver", default="auto",
+                        choices=["ansys", "abaqus", "calculix", "starccm", "vtk", "hdf5", "auto"],
+                        help="FEA solver source (default: auto-detect from file extension)")
+    parser.add_argument("--physics", default="FEA_static_linear",
+                        choices=["FEA_static_linear", "FEA_static_nonlinear", "FEA_dynamic",
+                                 "thermal", "thermal_structural", "multiphysics"],
+                        help="FEA physics type (default: FEA_static_linear)")
     parser.add_argument("--config", default="configs/base_config.yaml",
                         help="Path to config YAML file")
     parser.add_argument("--output-dir", default="results",
                         help="Directory to save results")
     parser.add_argument("--max-attempts", type=int, default=None,
                         help="Override max iteration attempts")
-    parser.add_argument("--discover", action="store_true",
-                        help="Run arXiv discovery before pipeline")
     parser.add_argument("--search-datasets", action="store_true",
-                        help="Autonomously search and download training datasets from HuggingFace/GitHub/Zenodo")
+                        help="Search and download FEA datasets from HuggingFace/GitHub/Zenodo")
     parser.add_argument("--log-dir", default="logs",
                         help="Log file directory")
     parser.add_argument("--db-path", default=None,
@@ -211,12 +217,13 @@ def main():
     if args.db_path:
         config["db_path"] = args.db_path
 
-    if args.discover:
-        run_discovery(config)
-
     search_datasets = getattr(args, "search_datasets", False)
 
-    if not search_datasets and not Path(args.data).exists():
+    if not search_datasets and not args.data:
+        logger.error("Provide --data <file> or --search-datasets")
+        sys.exit(1)
+
+    if not search_datasets and args.data and not Path(args.data).exists():
         logger.error(f"Data path does not exist: {args.data}")
         sys.exit(1)
 
@@ -224,6 +231,8 @@ def main():
         data_path       = args.data,
         config          = config,
         output_dir      = args.output_dir,
+        solver          = args.solver,
+        physics         = args.physics,
         max_attempts    = args.max_attempts,
         search_datasets = search_datasets,
     )

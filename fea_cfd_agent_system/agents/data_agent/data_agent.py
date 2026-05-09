@@ -1,31 +1,36 @@
 """
-Data Agent — ingests simulation data from any software,
+Data Agent — ingests FEA simulation data from any supported solver,
 validates quality, and outputs a unified schema dataset.
 """
 
-import os
 import numpy as np
 from pathlib import Path
 from loguru import logger
 from agents.orchestrator.agent_state import AgentSystemState, AgentStatus
-from data.loaders.starccm_loader import StarCCMLoader
-from data.loaders.vtk_loader import VTKLoader
-from data.loaders.openfoam_loader import OpenFOAMLoader
+
+
+FORMAT_MAP = {
+    ".rst":  "ansys",
+    ".rth":  "ansys_thermal",
+    ".odb":  "abaqus",
+    ".inp":  "abaqus_input",
+    ".frd":  "calculix",
+    ".dat":  "calculix",
+    ".vtu":  "vtk",
+    ".vtk":  "vtk",
+    ".h5":   "hdf5",
+    ".hdf5": "hdf5",
+    ".csv":  "csv",
+    ".npy":  "numpy",
+    ".npz":  "numpy",
+}
 
 
 class DataAgent:
     """
-    Reads simulation data from any supported software.
-    Cleans, validates, and produces unified schema dataset.
+    Reads FEA simulation data from ANSYS, Abaqus, CalculiX, STAR-CCM+, VTK, HDF5.
+    Cleans, validates, and produces unified FEA schema dataset.
     """
-
-    SUPPORTED_EXTENSIONS = {
-        ".csv":  "starccm",
-        ".vtk":  "vtk",
-        ".vtu":  "vtk",
-        ".cgns": "vtk",
-        ".h5":   "hdf5",
-    }
 
     def __init__(self, config: dict):
         self.config = config
@@ -40,56 +45,83 @@ class DataAgent:
             logger.info(f"Quality check: {len(accepted)} accepted, {len(rejected)} rejected")
 
             unified = self._build_unified_schema(accepted, state.software_source)
-            state.dataset = unified
+            state.dataset       = unified
             state.unified_schema = {
-                "n_cases": len(accepted),
-                "n_rejected": len(rejected),
-                "software": state.software_source,
-                "fields": list(unified.get("fields", {}).keys()),
-                "n_nodes": unified.get("n_nodes", 0),
-                "n_cells": unified.get("n_cells", 0),
+                "n_cases":        len(accepted),
+                "n_rejected":     len(rejected),
+                "software":       state.software_source,
+                "fields":         list(unified.get("fields", {}).keys()),
+                "n_nodes":        unified.get("n_nodes", 0),
+                "n_elements":     unified.get("n_elements", 0),
                 "boundary_types": unified.get("boundary_types", []),
+                "physics_type":   unified.get("physics_type", ""),
             }
             state.data_agent_status = AgentStatus.PASSED
             logger.success(f"Data Agent complete: {len(accepted)} cases loaded")
 
         except Exception as e:
             state.data_agent_status = AgentStatus.FAILED
-            state.error_message = f"Data Agent failed: {str(e)}"
+            state.error_message     = f"Data Agent failed: {str(e)}"
             logger.error(state.error_message)
 
         return state
 
     def _load_data(self, path: str, software: str) -> list:
-        """Load all simulation files from the given path."""
         p = Path(path)
         if p.is_dir():
-            files = list(p.glob("**/*.vtk")) + list(p.glob("**/*.vtu")) + list(p.glob("**/*.csv"))
+            files = []
+            for ext in FORMAT_MAP:
+                files.extend(p.glob(f"**/*{ext}"))
         else:
             files = [p]
 
-        loader_map = {
-            "STAR-CCM+": StarCCMLoader,
-            "OpenFOAM":  OpenFOAMLoader,
-            "default":   VTKLoader,
-        }
-        loader_cls = loader_map.get(software, loader_map["default"])
-        loader = loader_cls()
-        return [loader.load(str(f)) for f in files if f.exists()]
+        results = []
+        for f in files:
+            if not f.exists():
+                continue
+            loader = self._get_loader(str(f.suffix).lower(), software)
+            try:
+                data = loader.load(str(f))
+                if data:
+                    results.append(data)
+            except Exception as e:
+                logger.warning(f"Failed to load {f}: {e}")
+
+        return results
+
+    def _get_loader(self, ext: str, software: str):
+        fmt = FORMAT_MAP.get(ext, "vtk")
+
+        if fmt in ("ansys", "ansys_thermal"):
+            from agents.data_agent.ansys_loader import ANSYSLoader
+            return ANSYSLoader()
+        if fmt in ("abaqus", "abaqus_input"):
+            from agents.data_agent.abaqus_loader import AbaqusLoader
+            return AbaqusLoader()
+        if fmt == "calculix":
+            from agents.data_agent.calculix_loader import CalculiXLoader
+            return CalculiXLoader()
+        if fmt == "csv" and software in ("STAR-CCM+", "STARCCM"):
+            from agents.data_agent.starccm_fea_loader import StarCCMFEALoader
+            return StarCCMFEALoader()
+
+        # Universal fallback: VTK / HDF5 / CSV / NumPy
+        from data.loaders.vtk_loader import VTKLoader
+        return VTKLoader()
 
     def _inspect_quality(self, cases: list) -> tuple:
-        """Filter out bad simulation cases."""
         accepted, rejected = [], []
         for case in cases:
             if case is None:
                 continue
             issues = []
             for field_name, field_data in case.get("fields", {}).items():
-                if np.any(np.isnan(field_data)) or np.any(np.isinf(field_data)):
+                arr = np.asarray(field_data) if not isinstance(field_data, np.ndarray) else field_data
+                if np.any(np.isnan(arr)) or np.any(np.isinf(arr)):
                     issues.append(f"NaN/Inf in field {field_name}")
             skewness = case.get("mesh_quality", {}).get("skewness_max", 0)
             if skewness > 0.95:
-                issues.append(f"Skewness too high: {skewness:.2f}")
+                issues.append(f"Mesh skewness too high: {skewness:.2f}")
             if issues:
                 case["rejection_reasons"] = issues
                 rejected.append(case)
@@ -98,17 +130,18 @@ class DataAgent:
         return accepted, rejected
 
     def _build_unified_schema(self, cases: list, software: str) -> dict:
-        """Build unified dataset schema from accepted cases."""
         if not cases:
             return {}
         sample = cases[0]
         return {
-            "cases": cases,
-            "n_cases": len(cases),
-            "software": software,
-            "fields": {k: v.shape for k, v in sample.get("fields", {}).items()},
-            "n_nodes": sample.get("n_nodes", 0),
-            "n_cells": sample.get("n_cells", 0),
+            "cases":          cases,
+            "n_cases":        len(cases),
+            "software":       software,
+            "fields":         {k: np.asarray(v).shape for k, v in sample.get("fields", {}).items()},
+            "n_nodes":        sample.get("n_nodes", 0),
+            "n_elements":     sample.get("n_elements", 0),
             "boundary_types": sample.get("boundary_types", []),
-            "mesh_type": sample.get("mesh_type", "unknown"),
+            "mesh_type":      sample.get("mesh_type", "unknown"),
+            "physics_type":   sample.get("physics_type", "FEA_static_linear"),
+            "solver_source":  sample.get("solver_source", software),
         }
