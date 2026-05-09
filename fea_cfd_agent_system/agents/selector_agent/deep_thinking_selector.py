@@ -218,6 +218,15 @@ Output ONLY JSON:
             logger.warning(f"LLM reasoning failed: {e} — using score ranking")
             return top_candidates[:3]
 
+    def select_top_k(self, problem_card, dataset_info: dict = None, k: int = 3) -> list:
+        """
+        Return the top-k scored model candidates without full LLM reasoning.
+        Used by the MoE training phase to collect expert candidates efficiently.
+        """
+        candidates = self._apply_hard_filters(self.registry, problem_card)
+        candidates = self._score_all(candidates, problem_card)
+        return candidates[:k]
+
     def _install_and_verify(self, shortlist, state) -> list:
         """Try to install top model and verify with test forward pass."""
         for m in shortlist:

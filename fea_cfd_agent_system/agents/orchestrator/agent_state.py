@@ -223,9 +223,18 @@ class AgentSystemState:
     custom_model_attempted:   bool          = False
 
     # Architect
-    architect_triggered: bool         = False
-    custom_model_dna:    Optional[dict] = None
-    custom_model_code:   Optional[str] = None
+    architect_triggered:  bool          = False
+    custom_model_dna:     Optional[dict] = None
+    custom_model_code:    Optional[str]  = None
+    # Novel architecture generation tracking
+    templates_exhausted:  bool           = False
+    novel_arch_attempted: bool           = False
+
+    # Mixture of Experts
+    use_moe:    bool      = False
+    moe_k:      int       = 3
+    moe_experts: List[Any] = field(default_factory=list)
+    moe_model:  Any        = None
 
     # Dataset search / download
     search_datasets:        bool          = False

@@ -178,4 +178,23 @@ Start with imports.
         except Exception as e:
             return False, f"Forward pass error: {e}"
 
+        # NaN / Inf check on output
+        if not torch.isfinite(out).all():
+            return False, "Output contains NaN or Inf values"
+
+        # Gradient flow check — ensure at least one parameter receives gradients
+        try:
+            model.train()
+            dummy_train = torch.randn(2, 100, input_dim)
+            loss = model(dummy_train).mean()
+            loss.backward()
+            has_grad = any(
+                p.grad is not None and torch.isfinite(p.grad).all()
+                for p in model.parameters() if p.requires_grad
+            )
+            if not has_grad:
+                return False, "No parameter received a finite gradient (dead network)"
+        except Exception as e:
+            return False, f"Gradient flow check failed: {e}"
+
         return True, "OK"

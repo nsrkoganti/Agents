@@ -144,6 +144,91 @@ class TrainerAgent:
             config_used=config,
         )
 
+    def train_moe(self, moe_model, dataset, loss_fn, config: dict) -> "TrainingResult":
+        """
+        Three-phase Mixture-of-Experts training:
+          Phase 1 — Pre-train each expert independently (stable initialisation)
+          Phase 2 — Train gating network with experts frozen (fast convergence)
+          Phase 3 — Optional end-to-end fine-tune at low LR
+        """
+        from models.architectures.moe_surrogate import MixtureOfExpertsSurrogate
+        assert isinstance(moe_model, MixtureOfExpertsSurrogate)
+
+        phase_epochs = config.get("moe_phase_epochs", [200, 100, 50])
+        ft_lr        = config.get("moe_finetune_lr", 1e-4)
+
+        # ── Phase 1: pre-train each expert independently ───────────────────
+        logger.info("MoE Phase 1: pre-training experts independently")
+        moe_model.unfreeze_experts()
+        for k, expert in enumerate(moe_model.experts):
+            expert_config = {**config, "max_epochs": phase_epochs[0], "patience": 30}
+            logger.info(f"  Training expert {k + 1}/{moe_model.n_experts}")
+            self._train(expert, dataset, loss_fn, expert_config)
+
+        # ── Phase 2: train gating network only ────────────────────────────
+        logger.info("MoE Phase 2: training gating network (experts frozen)")
+        moe_model.freeze_experts()
+        gate_optim = torch.optim.Adam(moe_model.gate_parameters(),
+                                      lr=config.get("lr", 1e-3))
+        gate_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            gate_optim, T_max=phase_epochs[1]
+        )
+        cases      = dataset.get("cases", [])
+        n_val      = max(1, int(len(cases) * 0.2))
+        val_cases  = cases[-n_val:]
+        train_cases = cases[:-n_val]
+
+        best_val = float("inf")
+        for epoch in range(phase_epochs[1]):
+            moe_model.train()
+            for case in train_cases:
+                x, y = self._case_to_tensors(case)
+                if x is None:
+                    continue
+                gate_optim.zero_grad()
+                pred = moe_model(x)
+                loss = loss_fn(pred, y, case)
+                # Add load-balance term
+                physics_losses = moe_model.compute_physics_loss(x=x)
+                if "load_balance" in physics_losses:
+                    loss = loss + physics_losses["load_balance"]
+                loss.backward()
+                gate_optim.step()
+            gate_scheduler.step()
+
+            moe_model.eval()
+            with torch.no_grad():
+                val_loss = sum(
+                    loss_fn(moe_model(xv), yv, cv).item()
+                    for cv in val_cases
+                    for xv, yv in [self._case_to_tensors(cv)]
+                    if xv is not None
+                ) / max(len(val_cases), 1)
+            if val_loss < best_val:
+                best_val = val_loss
+
+        # ── Phase 3: optional end-to-end fine-tune ────────────────────────
+        if phase_epochs[2] > 0:
+            logger.info("MoE Phase 3: end-to-end fine-tune")
+            moe_model.unfreeze_experts()
+            ft_config = {**config, "max_epochs": phase_epochs[2],
+                         "lr": ft_lr, "patience": 15}
+            result = self._train(moe_model, dataset, loss_fn, ft_config)
+        else:
+            import time
+            result = TrainingResult(
+                model_object=moe_model,
+                val_loss=best_val,
+                train_loss=best_val,
+                training_epochs=phase_epochs[0] + phase_epochs[1],
+                training_time_seconds=0.0,
+                converged=True,
+                config_used=config,
+            )
+
+        logger.success(f"MoE training complete: val_loss={result.val_loss:.6f}")
+        return result
+
     def _case_to_tensors(self, case):
         """Convert a simulation case to input/output tensors."""
         coords = case.get("node_coords")
