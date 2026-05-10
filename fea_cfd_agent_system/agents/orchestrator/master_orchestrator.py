@@ -20,6 +20,7 @@ from agents.verifier_agent.verifier_agent import VerifierAgent
 from agents.saver_agent.saver_agent import SaverAgent
 from agents.self_learning.self_learning_updater import SelfLearningUpdater
 from agents.self_learning.knowledge_base import KnowledgeBase
+from agents.rag.rag_retriever import RAGRetriever
 from memory.run_database import RunDatabase
 
 
@@ -31,20 +32,24 @@ class MasterOrchestrator:
 
     def __init__(self, config: dict):
         self.config = config
+
+        # RAG retriever — shared across all agents (gracefully no-ops if deps missing)
+        self.retriever = RAGRetriever(config)
+
         self.data_agent = DataAgent(config)
         self.analyst_agent = AnalystAgent(config)
-        self.selector_agent = DeepThinkingSelector(config)
+        self.selector_agent = DeepThinkingSelector(config, retriever=self.retriever)
         self.trainer_agent = TrainerAgent(config)
         self.evaluator_agent = EvaluatorAgent(config)
         self.physics_agent = PhysicsMasterAgent(config)
-        self.iteration_agent = IterationAgent(config)
+        self.iteration_agent = IterationAgent(config, retriever=self.retriever)
         self.verifier_agent = VerifierAgent(config)
         self.saver_agent = SaverAgent(config)
 
         # Self-learning components
         db_path = config.get("self_learning", {}).get("database_path", "memory/experience.db")
-        self.db = RunDatabase(db_path=db_path)
-        self.knowledge_base = KnowledgeBase(config, self.db)
+        self.db = RunDatabase(db_path=db_path, retriever=self.retriever)
+        self.knowledge_base = KnowledgeBase(config, self.db, retriever=self.retriever)
         self.self_learning_updater = SelfLearningUpdater(config, self.db)
 
         # Dataset agent
@@ -165,7 +170,7 @@ class MasterOrchestrator:
     def _run_architect_agent(self, state: AgentSystemState) -> AgentSystemState:
         logger.info("=== ARCHITECT AGENT ===")
         from agents.model_architect.architect_agent import ArchitectAgent
-        architect = ArchitectAgent(self.config, self.db)
+        architect = ArchitectAgent(self.config, self.db, retriever=self.retriever)
         state.architect_triggered = True
         return architect.run(state)
 

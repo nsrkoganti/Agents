@@ -36,16 +36,18 @@ class ArchitectAgent:
     """
     Designs and builds custom neural architectures.
     Called when the existing model library is exhausted.
+    Uses RAG to retrieve successful custom DNA for similar problems.
     """
 
     MAX_DESIGN_ATTEMPTS = 5
     MAX_CODE_RETRIES    = 3
 
-    def __init__(self, config: dict, db: RunDatabase):
+    def __init__(self, config: dict, db: RunDatabase, retriever=None):
         self.config    = config
         self.db        = db
+        self.retriever = retriever  # Optional[RAGRetriever]
         self.llm       = get_dev_llm(max_tokens=3000)
-        self.generator = CodeGenerator()
+        self.generator = CodeGenerator(retriever=retriever)
         self.nas       = NASEngine(config)
 
     # All 5 standard template families
@@ -233,6 +235,37 @@ Output ONLY JSON:
         Returns an ArchitectureDNA built via ArchitectureDNA.from_llm_json().
         """
         available_blocks = [bt.value for bt in BlockType]
+
+        # Retrieve similar successful custom DNA via RAG
+        rag_dna_context = ""
+        if self.retriever and self.retriever.ready and problem_card:
+            failed_checks = [
+                k for k, v in requirements.items()
+                if k.startswith("needs_") and v is False
+            ]
+            similar_dna = self.retriever.find_similar_custom_dna(
+                physics_type=problem_card.physics_type.value,
+                failed_checks=failed_checks,
+                top_k=3,
+                min_r2=0.88,
+            )
+            if similar_dna:
+                dna_examples = [
+                    {
+                        "name":       d.get("name", ""),
+                        "blocks":     [b.get("type", "") for b in d.get("core_blocks", [])],
+                        "r2":         round(d.get("r2", 0), 3),
+                        "similarity": round(d.get("similarity", 0), 2),
+                    }
+                    for d in similar_dna
+                ]
+                rag_dna_context = f"""
+SUCCESSFUL CUSTOM ARCHITECTURES FOR SIMILAR PROBLEMS (retrieved from knowledge base):
+{json.dumps(dna_examples, indent=2)}
+
+Build on or improve one of these if the problem is similar, or design something entirely new.
+"""
+
         prompt = f"""
 You are a world-class neural architecture designer for FEA/CFD surrogate models.
 All 5 standard architectures (PINN, Transolver, FNO, GNN, Hybrid) have failed.
@@ -250,7 +283,7 @@ FAILURE ANALYSIS:
 - Physics violations: needs_physics_loss={requirements.get('needs_physics_loss', True)}
 - Graph structure needed: {requirements.get('needs_graph_structure', False)}
 - Attention over physics states: {requirements.get('needs_attention_over_physics_states', True)}
-
+{rag_dna_context}
 AVAILABLE BLOCK TYPES (use ONLY these values):
 {json.dumps(available_blocks, indent=2)}
 

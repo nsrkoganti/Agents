@@ -28,10 +28,12 @@ class DeepThinkingSelector:
     """
     Thinks like a senior ML researcher.
     Reads code. Reads benchmarks. Scores. Reasons. Selects.
+    Augments LLM reasoning with retrieved model history via RAG.
     """
 
-    def __init__(self, config: dict):
-        self.config = config
+    def __init__(self, config: dict, retriever=None):
+        self.config    = config
+        self.retriever = retriever  # Optional[RAGRetriever]
         self.llm = get_dev_llm(max_tokens=3000)
         self.scanner = GitHubScanner()
         self.scoring_engine = ModelScoringEngine(config)
@@ -163,6 +165,32 @@ class DeepThinkingSelector:
             for m in top_candidates
         ]
 
+        # Retrieve per-model history from RAG
+        rag_history_context = ""
+        if self.retriever and self.retriever.ready:
+            model_histories = {}
+            for m in top_candidates[:5]:
+                hist = self.retriever.find_model_history(m.name, problem_card, top_k=6)
+                if hist:
+                    successes = [h for h in hist if h.get("success")]
+                    model_histories[m.name] = {
+                        "n_similar_runs":  len(hist),
+                        "success_rate":    round(len(successes) / len(hist), 2),
+                        "avg_r2":          round(sum(h.get("r2", 0) for h in hist) / len(hist), 3),
+                        "top_examples":    [
+                            {"r2": round(h.get("r2", 0), 3), "success": h.get("success")}
+                            for h in hist[:3]
+                        ],
+                    }
+            if model_histories:
+                rag_history_context = f"""
+RETRIEVED MODEL HISTORY FOR SIMILAR PROBLEMS:
+{json.dumps(model_histories, indent=2)}
+
+Use this historical success/failure data to adjust your ranking — models with high
+success rates on similar problems should rank higher than the scoring alone suggests.
+"""
+
         prompt = f"""
 You are an expert ML researcher for FEA and CFD surrogate modeling.
 
@@ -172,16 +200,14 @@ Problem Card:
 - Data size: {problem_card.data_size} cases
 - Mesh nodes: {problem_card.n_nodes}
 - Physics constraints: {problem_card.physics_constraints}
-- Turbulence model: {problem_card.turbulence_model}
-- Re number: {problem_card.re_number}
 - Special flags: {problem_card.special_flags}
 - Geometry: {problem_card.geometry_description}
 
 Top scored candidates:
 {json.dumps(candidates_info, indent=2)}
-
+{rag_history_context}
 Choose the TOP 3 models to try in order. For each, explain WHY it fits.
-Consider mesh compatibility, data size, turbulence physics, geometry complexity.
+Consider mesh compatibility, data size, physics, geometry complexity, and history above.
 
 Output ONLY JSON:
 {{

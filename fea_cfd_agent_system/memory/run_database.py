@@ -44,11 +44,13 @@ class RunDatabase:
     """
     SQLite-backed persistent memory for the agent system.
     Stores runs, failures, model performance, patterns, and custom models.
+    Optionally indexes every save into the RAG vector store when a retriever is injected.
     """
 
-    def __init__(self, db_path: str = "memory/experience.db"):
+    def __init__(self, db_path: str = "memory/experience.db", retriever=None):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.retriever = retriever  # Optional[RAGRetriever]
         self._init_db()
         logger.info(f"RunDatabase initialized at {self.db_path}")
 
@@ -155,8 +157,12 @@ class RunDatabase:
                 record.rel_l2, int(record.success), record.n_iterations,
                 record.problem_hash, record.notes, record.timestamp,
             ))
+        if self.retriever:
+            self.retriever.index_run(record)
 
-    def save_failure(self, record: FailureRecord):
+    def save_failure(self, record: FailureRecord, r2_after: float = 0.0,
+                     failed_checks: Optional[List[str]] = None,
+                     lambda_json: Optional[Dict] = None):
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO failures
@@ -168,6 +174,8 @@ class RunDatabase:
                 record.fix_tried, record.r2_at_failure, record.iteration,
                 record.physics_type, record.timestamp,
             ))
+        if self.retriever:
+            self.retriever.index_failure(record, r2_after, failed_checks, lambda_json)
 
     def save_model_performance(self, model_name: str, physics_type: str,
                                 mesh_type: str, r2: float, rel_l2: float,
@@ -284,7 +292,8 @@ class RunDatabase:
 
     def save_custom_model(self, model_id: str, name: str, dna: dict,
                            code: str, problem: str, r2: float,
-                           generation: int):
+                           generation: int,
+                           failed_checks: Optional[List[str]] = None):
         ts = datetime.datetime.utcnow().isoformat()
         with self._connect() as conn:
             conn.execute("""
@@ -294,6 +303,10 @@ class RunDatabase:
                 VALUES (?,?,?,?,?,?,?,?)
             """, (model_id, name, json.dumps(dna), code, problem,
                   r2, generation, ts))
+        if self.retriever:
+            self.retriever.index_custom_model(
+                model_id, name, dna, code, problem, r2, failed_checks or []
+            )
 
     def get_best_custom_model(self, physics_type: str) -> Optional[Dict]:
         with self._connect() as conn:

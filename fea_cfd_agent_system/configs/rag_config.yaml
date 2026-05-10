@@ -1,0 +1,22 @@
+rag:
+  enabled: true
+
+  # sentence-transformers model (downloaded automatically on first run, ~90 MB)
+  model: "all-MiniLM-L6-v2"
+
+  # FAISS index persistence directory
+  index_dir: "memory/rag_indices"
+
+  # Default number of results to retrieve
+  top_k_default: 5
+
+  # Minimum cosine similarity to include a result (0.0 = return everything)
+  min_similarity: 0.55
+
+  # Which indices to build (disable any to skip that domain)
+  indices:
+    geometry:      true   # past runs by problem description
+    failure:       true   # failures + fixes that worked
+    physics_model: true   # per-model performance on similar problems
+    lambda:        true   # successful lambda weight configs
+    custom_dna:    true   # custom model DNA for similar failures
