@@ -19,10 +19,12 @@ class CodeGenerator:
     Converts ArchitectureDNA into working PyTorch model code.
     Uses LLM to write the forward() pass and any custom logic.
     Validates generated code actually imports and runs.
+    Optionally retrieves a working code example via RAG for few-shot generation.
     """
 
-    def __init__(self):
-        self.llm = get_verifier_llm(max_tokens=4000)
+    def __init__(self, retriever=None):
+        self.llm       = get_verifier_llm(max_tokens=4000)
+        self.retriever = retriever  # Optional[RAGRetriever]
 
     def generate(self, dna: ArchitectureDNA,
                   problem_card_dict: dict) -> str:
@@ -38,12 +40,33 @@ class CodeGenerator:
         block_descriptions = self._describe_blocks(dna)
         physics_loss_desc  = self._describe_physics_loss(dna)
 
+        # Retrieve a working code example from RAG for few-shot prompting
+        example_snippet = ""
+        if self.retriever and self.retriever.ready:
+            physics_type = problem_card.get("physics_type", "")
+            similar = self.retriever.find_similar_custom_dna(
+                physics_type=physics_type,
+                failed_checks=[],
+                top_k=1,
+                min_r2=0.90,
+            )
+            if similar and similar[0].get("code"):
+                code_preview = similar[0]["code"]  # first 1000 chars stored
+                example_snippet = f"""
+EXAMPLE OF A WORKING CUSTOM MODEL FOR A SIMILAR PROBLEM (r2={similar[0].get('r2', 0):.3f}):
+```python
+{code_preview}
+... (truncated)
+```
+Use this as a style and structure reference. Adapt it to the new architecture below.
+"""
+
         return f"""
 You are an expert PyTorch neural network architect specializing in
 physics simulation surrogate models.
 
 Write a complete, working PyTorch model class for this architecture.
-
+{example_snippet}
 ARCHITECTURE NAME: {dna.name}
 FAMILY: {dna.family}
 DESIGNED FOR: {dna.designed_for}
@@ -177,5 +200,24 @@ Start with imports.
                 return False, f"Wrong output dim: got {out.shape[-1]}, expected {output_dim}"
         except Exception as e:
             return False, f"Forward pass error: {e}"
+
+        # NaN / Inf check on output
+        if not torch.isfinite(out).all():
+            return False, "Output contains NaN or Inf values"
+
+        # Gradient flow check — ensure at least one parameter receives gradients
+        try:
+            model.train()
+            dummy_train = torch.randn(2, 100, input_dim)
+            loss = model(dummy_train).mean()
+            loss.backward()
+            has_grad = any(
+                p.grad is not None and torch.isfinite(p.grad).all()
+                for p in model.parameters() if p.requires_grad
+            )
+            if not has_grad:
+                return False, "No parameter received a finite gradient (dead network)"
+        except Exception as e:
+            return False, f"Gradient flow check failed: {e}"
 
         return True, "OK"

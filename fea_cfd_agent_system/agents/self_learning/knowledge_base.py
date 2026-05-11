@@ -17,11 +17,13 @@ class KnowledgeBase:
     """
     The system's learned knowledge.
     Queries the run database and uses LLM to reason over patterns.
+    Uses RAG vector search when available for semantic similarity retrieval.
     """
 
-    def __init__(self, config: dict, db: RunDatabase):
-        self.config = config
-        self.db     = db
+    def __init__(self, config: dict, db: RunDatabase, retriever=None):
+        self.config    = config
+        self.db        = db
+        self.retriever = retriever  # Optional[RAGRetriever]
         try:
             self.llm = get_dev_llm(max_tokens=1000)
         except Exception:
@@ -65,17 +67,63 @@ class KnowledgeBase:
         logger.info(f"Knowledge-based model order: {ordered[:4]}")
         return ordered
 
-    def recommend_lambda_weights(self, physics_type: str) -> Optional[Dict]:
-        """What lambda weights have worked well for this physics type?"""
+    def recommend_lambda_weights(self, physics_type: str,
+                                  failed_checks: Optional[List[str]] = None) -> Optional[Dict]:
+        """What lambda weights have worked well for this physics type + failure combination?"""
+        # RAG path — context-aware lambda recommendation
+        if self.retriever and self.retriever.ready and failed_checks:
+            results = self.retriever.find_lambda_history(
+                physics_type, failed_checks, top_k=3
+            )
+            if results:
+                best = results[0]
+                lambda_json = best.get("lambda_json", {})
+                if lambda_json:
+                    logger.info(
+                        f"RAG lambda recommendation for {physics_type} "
+                        f"(sim={best['similarity']:.2f}, r2={best.get('r2', 0):.3f}): "
+                        f"{lambda_json}"
+                    )
+                    return lambda_json
+
+        # SQL fallback — single best set per physics type
         weights = self.db.get_best_lambdas(physics_type)
         if weights:
-            logger.info(f"Knowledge: using stored lambda weights for {physics_type}: {weights}")
+            logger.info(f"Knowledge: SQL lambda weights for {physics_type}: {weights}")
         return weights
 
     def has_seen_similar_problem(self, state) -> Optional[Dict]:
-        """Has the system seen a nearly identical problem before?"""
+        """
+        Has the system seen a similar problem before?
+        RAG path: semantic similarity over the full problem description.
+        SQL fallback: exact match on physics_type + mesh_type + data_size range.
+        """
         if state.problem_card is None:
             return None
+
+        # RAG path — semantic similarity
+        if self.retriever and self.retriever.ready:
+            try:
+                results = self.retriever.find_similar_problems(
+                    state.problem_card, top_k=1, success_only=True
+                )
+                if results and results[0]["similarity"] >= 0.70:
+                    best = results[0]
+                    logger.info(
+                        f"RAG similar problem found (sim={best['similarity']:.2f}): "
+                        f"model={best.get('model')} r2={best.get('r2', 0):.3f}"
+                    )
+                    return {
+                        "model_name":   best.get("model", ""),
+                        "r2_score":     best.get("r2", 0.0),
+                        "n_iterations": 0,
+                        "similarity":   best.get("similarity", 0.0),
+                        "source":       "rag",
+                    }
+            except Exception as e:
+                logger.warning(f"RAG similar problem search failed: {e}")
+
+        # SQL fallback
         import sqlite3
         try:
             pc = state.problem_card
@@ -100,9 +148,10 @@ class KnowledgeBase:
                         "model_name":   row[0],
                         "r2_score":     row[1],
                         "n_iterations": row[2],
+                        "source":       "sql",
                     }
         except Exception as e:
-            logger.warning(f"Knowledge base query failed: {e}")
+            logger.warning(f"Knowledge base SQL query failed: {e}")
         return None
 
     def should_create_custom_model(self, state, attempts_so_far: int) -> bool:

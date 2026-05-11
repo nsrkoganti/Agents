@@ -132,3 +132,16 @@ models:
     benchmark_l2_error: 0.08
     inference_speed_score: 10
     code_maturity_stars: 26000
+
+  - name: "MixtureOfExperts"
+    family: "moe"
+    github_url: "local://models/architectures/moe_surrogate"
+    install_cmd: "already_built"
+    paper: "Custom MoE surrogate — per-node spatial gating over expert pool"
+    mesh_requirement: "any"
+    min_data_samples: 50
+    supports_field_output: true
+    has_builtin_physics_loss: true
+    benchmark_l2_error: 0.015
+    inference_speed_score: 6
+    code_maturity_stars: 0

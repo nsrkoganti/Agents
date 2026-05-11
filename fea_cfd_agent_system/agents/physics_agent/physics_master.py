@@ -1,5 +1,5 @@
 """
-Physics Master Agent — runs all 5 physics sub-agents in parallel.
+Physics Master Agent — runs 5 FEA physics sub-agents in parallel.
 A model CANNOT be saved unless it passes ALL physics checks.
 """
 
@@ -7,92 +7,75 @@ import concurrent.futures
 import datetime
 from loguru import logger
 from agents.orchestrator.agent_state import AgentSystemState, AgentStatus, PhysicsReport
-from agents.physics_agent.governing_equation_agent import GoverningEquationAgent
+from agents.physics_agent.equilibrium_agent      import EquilibriumAgent
+from agents.physics_agent.stress_strain_agent    import StressStrainAgent
+from agents.physics_agent.compatibility_agent    import CompatibilityAgent
 from agents.physics_agent.boundary_condition_agent import BoundaryConditionAgent
-from agents.physics_agent.conservation_agent import ConservationAgent
-from agents.physics_agent.turbulence_agent import TurbulenceAgent
-from agents.physics_agent.material_agent import MaterialAgent
+from agents.physics_agent.material_agent         import MaterialAgent
 
 
 class PhysicsMasterAgent:
     """
-    Runs 5 physics sub-agents simultaneously.
+    Runs 5 FEA physics sub-agents simultaneously via ThreadPoolExecutor.
     Aggregates results into PhysicsReport.
     Provides fix instructions to Iteration Agent on failure.
     """
 
     def __init__(self, config: dict):
-        self.config       = config
-        self.gov_eq_agent = GoverningEquationAgent(config)
-        self.bc_agent     = BoundaryConditionAgent(config)
-        self.conservation = ConservationAgent(config)
-        self.turbulence   = TurbulenceAgent(config)
-        self.material     = MaterialAgent(config)
+        self.config             = config
+        self.equilibrium_agent  = EquilibriumAgent(config)
+        self.stress_strain_agent = StressStrainAgent(config)
+        self.compatibility_agent = CompatibilityAgent(config)
+        self.bc_agent           = BoundaryConditionAgent(config)
+        self.material_agent     = MaterialAgent(config)
 
     def run(self, state: AgentSystemState) -> AgentSystemState:
-        logger.info("Physics Master: running 5 sub-agents")
+        logger.info("Physics Master: running 5 FEA sub-agents in parallel")
         state.physics_status = AgentStatus.RUNNING
 
         if state.training_result is None or state.training_result.model_object is None:
             logger.warning("Physics Agent: no model to check — skipping")
-            report = PhysicsReport(overall_passed=True)
-            state.physics_report = report
+            state.physics_report = PhysicsReport(overall_passed=True)
             state.physics_status = AgentStatus.PASSED
             return state
 
         model   = state.training_result.model_object
         dataset = state.dataset
         pc      = state.problem_card
-
-        report = PhysicsReport()
+        report  = PhysicsReport()
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
             futures = {
-                "gov_eq":       ex.submit(self.gov_eq_agent.check,  model, dataset, pc),
-                "bc":           ex.submit(self.bc_agent.check,       model, dataset, pc),
-                "conservation": ex.submit(self.conservation.check,   model, dataset, pc),
-                "turbulence":   ex.submit(self.turbulence.check,     model, dataset, pc),
-                "material":     ex.submit(self.material.check,       model, dataset, pc),
+                "equilibrium":   ex.submit(self.equilibrium_agent.check,   model, dataset, pc),
+                "stress_strain": ex.submit(self.stress_strain_agent.check, model, dataset, pc),
+                "compatibility": ex.submit(self.compatibility_agent.check, model, dataset, pc),
+                "bc":            ex.submit(self.bc_agent.check,            model, dataset, pc),
+                "material":      ex.submit(self.material_agent.check,      model, dataset, pc),
             }
             results = {k: f.result() for k, f in futures.items()}
 
-        report.governing_equations_passed = results["gov_eq"]["passed"]
-        report.governing_equations_detail = results["gov_eq"]
+        report.equilibrium_passed   = results["equilibrium"]["passed"]
+        report.equilibrium_detail   = results["equilibrium"]
+        report.stress_strain_passed = results["stress_strain"]["passed"]
+        report.stress_strain_detail = results["stress_strain"]
+        report.compatibility_passed = results["compatibility"]["passed"]
+        report.compatibility_detail = results["compatibility"]
         report.boundary_conditions_passed = results["bc"]["passed"]
         report.boundary_conditions_detail = results["bc"]
-        report.conservation_passed        = results["conservation"]["passed"]
-        report.conservation_detail        = results["conservation"]
-        report.turbulence_passed          = results["turbulence"]["passed"]
-        report.turbulence_detail          = results["turbulence"]
-        report.material_passed            = results["material"]["passed"]
-        report.material_detail            = results["material"]
+        report.material_passed      = results["material"]["passed"]
+        report.material_detail      = results["material"]
 
         report.overall_passed = all([
-            report.governing_equations_passed,
+            report.equilibrium_passed,
+            report.stress_strain_passed,
+            report.compatibility_passed,
             report.boundary_conditions_passed,
-            report.conservation_passed,
-            report.turbulence_passed if (pc and pc.turbulence_model) else True,
-            report.material_passed   if (pc and "FEA" in pc.physics_type.value) else True,
+            report.material_passed,
         ])
 
         if not report.overall_passed:
-            fixes = []
-            if not report.governing_equations_passed:
-                fixes.append(f"Increase lambda_continuity: continuity_error={results['gov_eq'].get('continuity_max','?')}")
-            if not report.boundary_conditions_passed:
-                fixes.append(f"Re-encode BC features: bc_error={results['bc'].get('no_slip_max','?')}")
-            if not report.conservation_passed:
-                fixes.append(f"Add conservation loss: mass_error={results['conservation'].get('mass_error','?')}")
-            if not report.turbulence_passed:
-                fixes.append(f"Add turbulence constraints: {results['turbulence'].get('failure_reason','?')}")
-            report.fix_instructions = " | ".join(fixes)
-
-            lambdas = {}
-            if not report.governing_equations_passed:
-                lambdas["continuity"] = state.physics_lambda_weights.get("continuity", 1.0) * 3.0
-            if not report.boundary_conditions_passed:
-                lambdas["bc"] = state.physics_lambda_weights.get("bc", 2.0) * 5.0
-            report.physics_lambda_updates = lambdas
+            report.fix_instructions = self._build_fix_instructions(results)
+            report.physics_lambda_updates = self._build_lambda_updates(results, state)
 
         state.physics_report = report
         state.physics_status = AgentStatus.PASSED if report.overall_passed else AgentStatus.FAILED
@@ -101,16 +84,48 @@ class PhysicsMasterAgent:
             self._publish_insufficient_bc(state, results["bc"])
 
         logger.info(
-            f"Physics: gov_eq={report.governing_equations_passed}, "
+            f"Physics: equilibrium={report.equilibrium_passed}, "
+            f"stress_strain={report.stress_strain_passed}, "
+            f"compatibility={report.compatibility_passed}, "
             f"bc={report.boundary_conditions_passed}, "
-            f"conservation={report.conservation_passed}, "
-            f"turbulence={report.turbulence_passed}, "
+            f"material={report.material_passed}, "
             f"overall={report.overall_passed}"
         )
         return state
 
+    def _build_fix_instructions(self, results: dict) -> str:
+        fixes = []
+        if not results["equilibrium"]["passed"]:
+            res = results["equilibrium"].get("residual_max", "?")
+            fixes.append(f"Increase lambda_equilibrium: residual={res:.3e}")
+        if not results["stress_strain"]["passed"]:
+            err = results["stress_strain"].get("constitutive_err", "?")
+            fixes.append(f"Enforce constitutive law: constitutive_err={err:.3f}")
+        if not results["compatibility"]["passed"]:
+            err = results["compatibility"].get("compatibility_err", "?")
+            fixes.append(f"Add compatibility loss: compat_err={err:.3e}")
+        if not results["bc"]["passed"]:
+            err = results["bc"].get("fixed_support_err", "?")
+            fixes.append(f"Re-encode BC features: fixed_support_err={err:.2e}")
+        if not results["material"]["passed"]:
+            reason = results["material"].get("failure_reason", "check material model")
+            fixes.append(f"Material violation: {reason}")
+        return " | ".join(fixes)
+
+    def _build_lambda_updates(self, results: dict, state: AgentSystemState) -> dict:
+        lambdas = {}
+        w = state.physics_lambda_weights
+        if not results["equilibrium"]["passed"]:
+            lambdas["equilibrium"] = w.get("equilibrium", 1.0) * 2.0
+        if not results["stress_strain"]["passed"]:
+            lambdas["constitutive"] = w.get("constitutive", 1.0) * 2.0
+        if not results["compatibility"]["passed"]:
+            lambdas["compatibility"] = w.get("compatibility", 1.0) * 2.0
+        if not results["bc"]["passed"]:
+            lambdas["bc"] = w.get("bc", 2.0) * 5.0
+        return lambdas
+
     def _publish_insufficient_bc(self, state: AgentSystemState, bc_result: dict) -> None:
-        """Notify dataset agent when BC data is missing."""
         already = any(
             m.get("type") == "INSUFFICIENT_BC_DATA" and not m.get("handled")
             for m in state.agent_messages

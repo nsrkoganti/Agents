@@ -16,10 +16,12 @@ class IterationAgent:
     """
     Analyzes failures and decides what to fix.
     Uses LLM to reason about the best fix strategy.
+    Retrieves similar past failures via RAG when available.
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, retriever=None):
         self.config      = config
+        self.retriever   = retriever  # Optional[RAGRetriever]
         self.llm         = get_dev_llm(max_tokens=1000)
         self.max_attempts  = config.get("iteration", {}).get("total_max_attempts", 24)
         self.max_per_model = config.get("iteration", {}).get("max_attempts_per_model", 3)
@@ -94,22 +96,51 @@ class IterationAgent:
                 "reason": eval_r.failure_reason if eval_r else None,
             },
             "physics": {
-                "overall_passed": phys_r.overall_passed if phys_r else False,
-                "governing_eq":   phys_r.governing_equations_passed if phys_r else True,
-                "bc":             phys_r.boundary_conditions_passed if phys_r else True,
-                "conservation":   phys_r.conservation_passed if phys_r else True,
-                "turbulence":     phys_r.turbulence_passed if phys_r else True,
+                "overall_passed":  phys_r.overall_passed if phys_r else False,
+                "equilibrium":     phys_r.equilibrium_passed if phys_r else True,
+                "bc":              phys_r.boundary_conditions_passed if phys_r else True,
+                "stress_strain":   phys_r.stress_strain_passed if phys_r else True,
+                "compatibility":   phys_r.compatibility_passed if phys_r else True,
                 "fix_instructions": phys_r.fix_instructions if phys_r else None,
             },
             "attempts_on_current_model": self._count_model_attempts(state),
         }
+
+        # Retrieve similar past failures and their fixes via RAG
+        rag_context = ""
+        if self.retriever and self.retriever.ready:
+            model_name     = diagnosis_info["model"]
+            failure_reason = (diagnosis_info["evaluator"].get("reason") or
+                              diagnosis_info["physics"].get("fix_instructions") or "")
+            physics_type   = (state.problem_card.physics_type.value
+                              if state.problem_card else "unknown")
+            retrieved = self.retriever.find_fixes_for_failure(
+                model_name, failure_reason, physics_type, top_k=4
+            )
+            if retrieved:
+                fix_examples = [
+                    {
+                        "failure": r.get("failure_reason", ""),
+                        "fix":     r.get("fix_tried", ""),
+                        "r2_before": round(r.get("r2_before", 0), 3),
+                        "r2_after":  round(r.get("r2_after", 0), 3),
+                        "similarity": round(r.get("similarity", 0), 2),
+                    }
+                    for r in retrieved
+                ]
+                rag_context = f"""
+SIMILAR PAST FAILURES (retrieved from knowledge base, sorted by relevance):
+{json.dumps(fix_examples, indent=2)}
+
+Use these examples to inform your fix choice — prefer fixes that improved R² before.
+"""
 
         prompt = f"""
 You are debugging a failed ML surrogate model for CFD/FEA simulation.
 
 Failure info:
 {json.dumps(diagnosis_info, indent=2)}
-
+{rag_context}
 Decide the fix. Output ONLY JSON:
 {{
   "fix_type": "one of: tune_hyperparameters | increase_physics_loss | re_encode_bc | next_model | add_data_augmentation | switch_to_pinn",
@@ -125,6 +156,7 @@ Rules:
 - If continuity failed: fix_type = increase_physics_loss with lambda_updates.continuity *= 3
 - If attempts_on_current_model >= 3: fix_type = next_model
 - If all physics fail repeatedly: fix_type = switch_to_pinn
+- Prefer fix_type values that succeeded in similar past failures above
 """
         try:
             response = self.llm.invoke(prompt)

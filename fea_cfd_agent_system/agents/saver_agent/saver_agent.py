@@ -90,7 +90,7 @@ class SaverAgent:
             "problem_type":    pc.physics_type.value if pc else "",
             "geometry":        pc.geometry_description if pc else "",
             "software_source": state.software_source,
-            "turbulence_model": pc.turbulence_model if pc else None,
+            "turbulence_model": None,
             "training_samples": pc.data_size if pc else 0,
             "metrics": {
                 "R2":              round(ev.r2_score, 4) if ev else None,
@@ -115,11 +115,11 @@ class SaverAgent:
         if pr is None:
             return {"overall": "NOT_CHECKED"}
         return {
-            "governing_equations": {"passed": pr.governing_equations_passed, "detail": pr.governing_equations_detail},
-            "boundary_conditions": {"passed": pr.boundary_conditions_passed, "detail": pr.boundary_conditions_detail},
-            "conservation":        {"passed": pr.conservation_passed,        "detail": pr.conservation_detail},
-            "turbulence":          {"passed": pr.turbulence_passed,          "detail": pr.turbulence_detail},
-            "material":            {"passed": pr.material_passed,            "detail": pr.material_detail},
+            "equilibrium":         {"passed": pr.equilibrium_passed,          "detail": pr.equilibrium_detail},
+            "stress_strain":       {"passed": pr.stress_strain_passed,        "detail": pr.stress_strain_detail},
+            "compatibility":       {"passed": pr.compatibility_passed,        "detail": pr.compatibility_detail},
+            "boundary_conditions": {"passed": pr.boundary_conditions_passed,  "detail": pr.boundary_conditions_detail},
+            "material":            {"passed": pr.material_passed,             "detail": pr.material_detail},
             "overall":             "PHYSICALLY VERIFIED" if pr.overall_passed else "FAILED",
             "certified_at":        datetime.datetime.now().isoformat(),
         }

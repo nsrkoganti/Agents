@@ -31,6 +31,11 @@ class BlockType(str, Enum):
     HIGHWAY       = "highway_gate"
     GLOBAL_POOL   = "global_pooling"
     SLICE_POOL    = "slice_pooling"
+    # Novel block types for LLM-designed architectures
+    MAMBA_BLOCK      = "mamba_block"       # selective state-space, O(N) complexity
+    CONV_NEXT_BLOCK  = "conv_next_block"   # depthwise conv + LayerNorm, modern CNN
+    CROSS_ATTENTION  = "cross_attention"   # cross-attn between mesh nodes & query points
+    SPECTRAL_NORM    = "spectral_norm"     # equivariant spectral layer
 
 
 @dataclass
@@ -77,6 +82,56 @@ class ArchitectureDNA:
         d["core_blocks"]       = [rebuild_block(b) for b in d.get("core_blocks", [])]
         d["output_processing"] = [rebuild_block(b) for b in d.get("output_processing", [])]
         return cls(**d)
+
+    @classmethod
+    def from_llm_json(cls, json_dict: Dict) -> "ArchitectureDNA":
+        """
+        Build ArchitectureDNA from a free-form JSON dict produced by the LLM.
+        Validates block types against the BlockType enum.
+        Expected JSON shape:
+          {
+            "name": "CustomNovelNet",
+            "family": "hybrid",
+            "designed_for": "FEA_static_nonlinear",
+            "mesh_type": "any",
+            "has_physics_loss": true,
+            "physics_loss_types": ["equilibrium", "bc"],
+            "input_blocks": [{"type": "coord_embed", "hidden_dim": 128}],
+            "core_blocks":  [{"type": "mamba_block", "hidden_dim": 256}, ...],
+            "output_blocks": [{"type": "linear", "hidden_dim": 4}]
+          }
+        """
+        def _parse_block(b: Dict) -> ArchitectureBlock:
+            raw_type = b.get("type", b.get("block_type", "linear"))
+            try:
+                bt = BlockType(raw_type)
+            except ValueError:
+                bt = BlockType.LINEAR
+            return ArchitectureBlock(
+                block_type=bt,
+                hidden_dim=b.get("hidden_dim", 128),
+                n_heads=b.get("n_heads", 8),
+                n_modes=b.get("n_modes", 16),
+                n_slices=b.get("n_slices", 32),
+                dropout=b.get("dropout", 0.1),
+                activation=b.get("activation", "gelu"),
+                residual=b.get("residual", True),
+                kwargs=b.get("kwargs", {}),
+            )
+
+        return cls(
+            name=json_dict.get("name", "LLMDesignedModel"),
+            family=json_dict.get("family", "hybrid"),
+            designed_for=json_dict.get("designed_for", ""),
+            mesh_type=json_dict.get("mesh_type", "any"),
+            has_physics_loss=json_dict.get("has_physics_loss", True),
+            physics_loss_types=json_dict.get("physics_loss_types", ["equilibrium", "bc"]),
+            input_processing=[_parse_block(b) for b in json_dict.get("input_blocks", [])],
+            core_blocks=[_parse_block(b) for b in json_dict.get("core_blocks", [])],
+            output_processing=[_parse_block(b) for b in json_dict.get("output_blocks", [])],
+            generation=json_dict.get("generation", 1),
+            parent_names=json_dict.get("parent_names", []),
+        )
 
 
 # ── Pre-defined DNA templates ─────────────────────────────────

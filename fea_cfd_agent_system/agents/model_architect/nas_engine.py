@@ -15,9 +15,20 @@ from agents.model_architect.architecture_dna import (
 
 class NASEngine:
     """
-    Bayesian optimization over architecture hyperparameters.
-    Doesn't change the block types — only sizes and counts.
+    Bayesian optimization over architecture hyperparameters AND block types.
+    For fixed templates: searches sizes/counts only.
+    For novel architectures (from_llm_json): also searches block type sequences.
     """
+
+    # Block types eligible for NAS block-type search (excludes utility layers)
+    SEARCHABLE_CORE_BLOCKS = [
+        BlockType.PHYSICS_ATTN,
+        BlockType.FOURIER,
+        BlockType.GRAPH_CONV,
+        BlockType.MAMBA_BLOCK,
+        BlockType.CONV_NEXT_BLOCK,
+        BlockType.CROSS_ATTENTION,
+    ]
 
     def __init__(self, config: dict):
         self.config = config
@@ -25,8 +36,11 @@ class NASEngine:
 
     def refine_dna(self, dna: ArchitectureDNA,
                     problem_card, n_trials: int = 20) -> ArchitectureDNA:
-        """Search for better hyperparameters for the given DNA template."""
+        """Search for better hyperparameters (and optionally block types) for the given DNA."""
         logger.info(f"NAS: searching architecture space ({n_trials} trials)")
+
+        # Detect if this is a novel / LLM-designed DNA that allows block-type search
+        is_novel = dna.generation >= 2
 
         def objective(trial):
             hidden_dim = trial.suggest_categorical("hidden_dim", [64, 128, 256, 512])
@@ -35,9 +49,20 @@ class NASEngine:
             n_slices   = trial.suggest_categorical("n_slices", [8, 16, 32, 64]) \
                          if any(b.block_type == BlockType.PHYSICS_ATTN for b in dna.core_blocks) else 16
             n_heads    = trial.suggest_categorical("n_heads", [4, 8, 16]) \
-                         if any(b.block_type == BlockType.ATTENTION for b in dna.core_blocks) else 8
+                         if any(b.block_type in (BlockType.ATTENTION, BlockType.CROSS_ATTENTION)
+                                for b in dna.core_blocks) else 8
 
-            trial_dna = self._apply_params(dna, hidden_dim, n_layers, dropout, n_slices, n_heads)
+            # For novel architectures, also sample core block types
+            if is_novel and dna.core_blocks:
+                searchable = [bt.value for bt in self.SEARCHABLE_CORE_BLOCKS]
+                core_type_0 = trial.suggest_categorical("core_type_0", searchable)
+                core_type_1 = trial.suggest_categorical("core_type_1", searchable)
+                selected_types = [BlockType(core_type_0), BlockType(core_type_1)]
+            else:
+                selected_types = None
+
+            trial_dna = self._apply_params(dna, hidden_dim, n_layers, dropout,
+                                           n_slices, n_heads, selected_types)
             return self._estimate_score(trial_dna, problem_card)
 
         study = optuna.create_study(direction="maximize")
@@ -46,6 +71,13 @@ class NASEngine:
         best = study.best_params
         logger.info(f"NAS best: {best}")
 
+        selected_types = None
+        if is_novel and dna.core_blocks:
+            selected_types = [
+                BlockType(best.get("core_type_0", dna.core_blocks[0].block_type.value)),
+                BlockType(best.get("core_type_1", dna.core_blocks[-1].block_type.value)),
+            ]
+
         return self._apply_params(
             dna,
             hidden_dim=best["hidden_dim"],
@@ -53,17 +85,22 @@ class NASEngine:
             dropout=best.get("dropout", 0.1),
             n_slices=best.get("n_slices", 32),
             n_heads=best.get("n_heads", 8),
+            block_types=selected_types,
         )
 
     def _apply_params(self, dna: ArchitectureDNA, hidden_dim: int,
                        n_layers: int, dropout: float,
-                       n_slices: int, n_heads: int) -> ArchitectureDNA:
+                       n_slices: int, n_heads: int,
+                       block_types: list = None) -> ArchitectureDNA:
         new_dna = copy.deepcopy(dna)
         template_block = new_dna.core_blocks[0] if new_dna.core_blocks else None
         if template_block:
             new_dna.core_blocks = []
             for i in range(n_layers):
                 b = copy.deepcopy(template_block)
+                # Optionally override block type from NAS search
+                if block_types:
+                    b.block_type = block_types[i % len(block_types)]
                 b.hidden_dim = hidden_dim
                 b.dropout    = dropout
                 b.n_slices   = n_slices

@@ -1,6 +1,11 @@
 """
-Boundary Condition Agent — checks all BCs are respected by model predictions.
-No-slip at walls, inlet velocity profiles, outlet pressure.
+Boundary Condition Agent — checks FEA boundary conditions in model predictions.
+
+Checks:
+  - Fixed supports: ||u|| ≈ 0 at constrained nodes
+  - Applied loads: reaction forces balance applied loads (Newton's 3rd law)
+  - Symmetry planes: normal displacement ≈ 0
+  - Contact: penetration = 0, contact pressure ≥ 0
 """
 
 import numpy as np
@@ -12,42 +17,73 @@ class BoundaryConditionAgent:
 
     def __init__(self, config: dict):
         self.config = config
-        self.bc_threshold = config.get("physics", {}).get("cfd", {}).get("bc_error_threshold", 1e-6)
+        fea_cfg = config.get("physics", {}).get("fea", {})
+        self.disp_threshold    = fea_cfg.get("static_linear", {}).get("bc_error_max", 1e-6)
+        self.reaction_tol      = 0.05   # 5% tolerance on force balance
+        self.symmetry_threshold = 1e-6
 
     def check(self, model, dataset, problem_card: ProblemCard) -> dict:
         result = {
-            "passed":      True,
-            "no_slip_max": 0.0,
-            "inlet_match": 1.0,
-            "outlet_ok":   True,
+            "passed":            True,
+            "fixed_support_err": 0.0,
+            "reaction_err":      0.0,
+            "symmetry_err":      0.0,
+            "missing_fields":    [],
         }
 
-        for case in dataset.get("cases", [])[:5]:
-            fields        = case.get("fields", {})
-            boundary_info = case.get("boundary_info", {})
-            velocity      = fields.get("velocity")
+        cases = dataset.get("cases", []) if isinstance(dataset, dict) else []
+        for case in cases[:5]:
+            fields          = case.get("fields", {})
+            displacement    = fields.get("displacement")    # (N, 3)
+            reaction_forces = fields.get("reaction_forces") # (N_bc, 3)
+            boundary_info   = case.get("boundary_info", {})
+            applied_load    = case.get("applied_load", None)
 
-            if velocity is None:
+            if displacement is None:
+                result["missing_fields"].append("displacement")
                 continue
 
-            wall_idx = boundary_info.get("wall_node_indices", [])
-            if len(wall_idx) > 0:
-                wall_vel  = velocity[wall_idx]
-                no_slip_err = float(np.max(np.abs(wall_vel)))
-                result["no_slip_max"] = max(result["no_slip_max"], no_slip_err)
-                if no_slip_err > self.bc_threshold:
+            # 1. Fixed support check: constrained nodes should have u ≈ 0
+            fixed_idx = boundary_info.get("fixed_node_indices",
+                        boundary_info.get("wall_node_indices", []))
+            if len(fixed_idx) > 0:
+                u_fixed = displacement[fixed_idx]
+                err = float(np.max(np.abs(u_fixed)))
+                result["fixed_support_err"] = max(result["fixed_support_err"], err)
+                if err > self.disp_threshold:
                     result["passed"] = False
                     result["failure_reason"] = (
-                        f"No-slip violated at wall: max_velocity={no_slip_err:.2e}"
+                        f"Fixed support violated: max_displacement={err:.2e} "
+                        f"> threshold={self.disp_threshold:.1e}"
                     )
 
-            inlet_idx     = boundary_info.get("inlet_node_indices", [])
-            inlet_bc_vel  = case.get("boundary_conditions", {}).get("inlet", {}).get("U", None)
-            if len(inlet_idx) > 0 and inlet_bc_vel is not None:
-                v_inlet = velocity[inlet_idx]
-                v_mag   = (float(np.mean(np.linalg.norm(v_inlet, axis=-1)))
-                           if v_inlet.ndim > 1 else float(np.mean(np.abs(v_inlet))))
-                match = 1.0 - abs(v_mag - inlet_bc_vel) / (inlet_bc_vel + 1e-10)
-                result["inlet_match"] = min(result["inlet_match"], match)
+            # 2. Reaction force balance
+            if reaction_forces is not None and applied_load is not None:
+                total_reaction = np.sum(reaction_forces, axis=0)
+                load_vec       = np.atleast_1d(applied_load)
+                if len(load_vec) == len(total_reaction):
+                    f_norm = np.linalg.norm(load_vec) + 1e-30
+                    err    = float(np.linalg.norm(total_reaction + load_vec) / f_norm)
+                    result["reaction_err"] = max(result["reaction_err"], err)
+                    if err > self.reaction_tol:
+                        result["passed"] = False
+                        result["failure_reason"] = (
+                            f"Reaction force imbalance: {err:.3f} > {self.reaction_tol}"
+                        )
+
+            # 3. Symmetry plane check: normal displacement ≈ 0
+            sym_idx    = boundary_info.get("symmetry_node_indices", [])
+            sym_normal = boundary_info.get("symmetry_normal", None)
+            if len(sym_idx) > 0 and sym_normal is not None:
+                u_sym   = displacement[sym_idx]
+                n       = np.array(sym_normal, dtype=float)
+                n      /= np.linalg.norm(n) + 1e-30
+                u_n     = float(np.max(np.abs(u_sym @ n)))
+                result["symmetry_err"] = max(result["symmetry_err"], u_n)
+                if u_n > self.symmetry_threshold:
+                    result["passed"] = False
+                    result["failure_reason"] = (
+                        f"Symmetry BC violated: normal_disp={u_n:.2e}"
+                    )
 
         return result

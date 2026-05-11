@@ -1,34 +1,21 @@
-# Base configuration for all runs
+# Base configuration for FEA Surrogate ML Agent System
 
 system:
-  name: "FEA_CFD_ML_Agent_System"
-  version: "1.0.0"
+  name: "FEA_Surrogate_ML_Agent_System"
+  version: "2.0.0"
   device: "cuda"
   seed: 42
   log_level: "INFO"
 
 # LLM configuration
-# Provider resolution order for dev LLM (first env var set wins):
-#   1. NVIDIA_API_KEY   → build.nvidia.com free NIM (set NVIDIA_MODEL to override)
-#   2. OPENROUTER_API_KEY → OpenRouter / Kilo AI   (set OPENROUTER_MODEL to override)
-#   3. fallback          → Anthropic direct
-# Verifier always uses Anthropic direct.
+# Dev LLM: Gemini 2.5 Flash (free: 15 RPM / 1500 RPD) → Claude Sonnet 4.6 fallback
+# Verifier LLM: Claude Opus 4.7 (always Anthropic direct)
 llm:
-  # NVIDIA NIM (free tier — 1000 credits/month, no credit card)
-  nvidia_base_url: "https://integrate.api.nvidia.com/v1"
-  nvidia_default_model: "meta/llama-3.3-70b-instruct"
-  # Alternative NVIDIA models:
-  #   nvidia/llama-3.1-nemotron-70b-instruct
-  #   mistralai/mixtral-8x22b-instruct-v0.1
-  #   google/gemma-3-27b-it
-
-  # OpenRouter / Kilo AI
-  openrouter_base_url: "https://openrouter.ai/api/v1"
-  dev_model: "anthropic/claude-sonnet-4"
-
-  # Verifier (always Anthropic direct)
+  dev_provider: "gemini"
+  dev_model: "gemini-2.5-flash"
   verifier_provider: "anthropic"
-  verifier_model: "claude-sonnet-4-20250514"
+  verifier_model: "claude-opus-4-7"
+  fallback_model: "claude-sonnet-4-6"
 
 # Accuracy thresholds — model cannot be saved unless these are met
 evaluation:
@@ -36,8 +23,6 @@ evaluation:
     r2_min: 0.92
     rel_l2_max: 0.05
     max_point_error_max: 0.15
-    physics_residual_max: 1.0e-3
-    mass_conservation_error_max: 0.001
     bc_error_max: 1.0e-6
     inference_time_ms_max: 100.0
 
@@ -47,18 +32,34 @@ iteration:
   max_models_to_try: 8
   total_max_attempts: 24
 
-# Physics agent thresholds
+# Physics agent thresholds (FEA only)
 physics:
-  cfd:
-    continuity_threshold: 1.0e-6
-    momentum_threshold: 1.0e-4
-    energy_threshold: 1.0e-4
-    mass_conservation_error_max: 0.0001
   fea:
-    equilibrium_threshold: 1.0e-5
-    compatibility_threshold: 1.0e-7
-    symmetry_threshold: 1.0e-8
-    strain_energy_error_max: 0.01
+    static_linear:
+      r2_min: 0.95
+      rel_l2_max: 0.03
+      equilibrium_residual_max: 1.0e-5
+      stress_error_max: 0.02
+      strain_energy_error_max: 0.01
+      compatibility_threshold: 1.0e-7
+      symmetry_threshold: 1.0e-8
+    static_nonlinear:
+      r2_min: 0.93
+      rel_l2_max: 0.05
+      equilibrium_residual_max: 1.0e-4
+      compatibility_threshold: 1.0e-6
+    dynamic:
+      r2_min: 0.90
+      rel_l2_max: 0.08
+      modal_assurance_criterion_min: 0.90
+      compatibility_threshold: 1.0e-6
+    thermal:
+      r2_min: 0.95
+      rel_l2_max: 0.03
+      energy_balance_error_max: 0.001
+    thermal_structural:
+      r2_min: 0.92
+      rel_l2_max: 0.04
 
 # Training defaults
 training:
@@ -67,18 +68,25 @@ training:
   gradient_clip_max_norm: 1.0
   default_lr: 1.0e-3
 
-# Model registry
+# Physics loss lambda weights (soft penalty method)
+physics_lambda_weights:
+  equilibrium: 1.0
+  bc: 2.0
+  compatibility: 1.0
+  constitutive: 1.0
+  symmetry: 1.0
+
+# Lambda multipliers when physics check fails
+lambda_multipliers:
+  equilibrium: 2.0
+  bc: 5.0
+  symmetry: 2.0
+  compatibility: 2.0
+  constitutive: 2.0
+
+# Model selector score weights per physics type
 selector:
   score_weights:
-    CFD_incompressible_turbulent:
-      physics_fit: 0.25
-      mesh_fit: 0.20
-      data_efficiency: 0.15
-      accuracy: 0.15
-      physics_law: 0.10
-      speed: 0.08
-      code_maturity: 0.05
-      compute: 0.02
     FEA_static_linear:
       physics_fit: 0.25
       mesh_fit: 0.20
@@ -88,3 +96,30 @@ selector:
       speed: 0.05
       code_maturity: 0.05
       compute: 0.05
+    FEA_static_nonlinear:
+      physics_fit: 0.28
+      mesh_fit: 0.20
+      data_efficiency: 0.12
+      accuracy: 0.15
+      physics_law: 0.12
+      speed: 0.05
+      code_maturity: 0.05
+      compute: 0.03
+    FEA_dynamic:
+      physics_fit: 0.25
+      mesh_fit: 0.18
+      data_efficiency: 0.12
+      accuracy: 0.15
+      physics_law: 0.15
+      speed: 0.08
+      code_maturity: 0.05
+      compute: 0.02
+    thermal:
+      physics_fit: 0.25
+      mesh_fit: 0.20
+      data_efficiency: 0.15
+      accuracy: 0.15
+      physics_law: 0.10
+      speed: 0.07
+      code_maturity: 0.05
+      compute: 0.03

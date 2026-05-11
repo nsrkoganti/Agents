@@ -40,8 +40,8 @@ class DatasetOrchestrator:
         if state.problem_card:
             physics_type = state.problem_card.physics_type.value
             mesh_type    = state.problem_card.mesh_type.value
-            description  = (f"Re={state.problem_card.re_number}, "
-                            f"turbulence={state.problem_card.turbulence_model}")
+            description  = (f"material={state.problem_card.material_model}, "
+                            f"loading={state.problem_card.loading_type}")
         elif state.unified_schema:
             physics_type = state.unified_schema.get("physics_type", physics_type)
             mesh_type    = state.unified_schema.get("mesh_type",    mesh_type)

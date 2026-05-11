@@ -24,7 +24,7 @@ from agents.orchestrator.agent_state import (
     AgentSystemState, AgentStatus, ModelCandidate
 )
 from agents.model_architect.architecture_dna import (
-    ArchitectureDNA, pinn_dna, transolver_dna, fno_dna,
+    ArchitectureDNA, BlockType, pinn_dna, transolver_dna, fno_dna,
     gnn_dna, hybrid_transolver_pinn_dna
 )
 from agents.model_architect.code_generator import CodeGenerator
@@ -36,17 +36,22 @@ class ArchitectAgent:
     """
     Designs and builds custom neural architectures.
     Called when the existing model library is exhausted.
+    Uses RAG to retrieve successful custom DNA for similar problems.
     """
 
     MAX_DESIGN_ATTEMPTS = 5
     MAX_CODE_RETRIES    = 3
 
-    def __init__(self, config: dict, db: RunDatabase):
+    def __init__(self, config: dict, db: RunDatabase, retriever=None):
         self.config    = config
         self.db        = db
+        self.retriever = retriever  # Optional[RAGRetriever]
         self.llm       = get_dev_llm(max_tokens=3000)
-        self.generator = CodeGenerator()
+        self.generator = CodeGenerator(retriever=retriever)
         self.nas       = NASEngine(config)
+
+    # All 5 standard template families
+    _TEMPLATE_FAMILIES = {"pinn", "transformer", "gnn", "operator", "hybrid"}
 
     def run(self, state: AgentSystemState) -> AgentSystemState:
         """Design a custom model for this problem."""
@@ -63,10 +68,19 @@ class ArchitectAgent:
             f"ARCHITECT: {design_requirements.get('summary', 'analyzing...')}"
         )
 
-        dna = self._choose_template(design_requirements, problem_card)
-        state.thinking_log.append(
-            f"ARCHITECT: Designing {dna.name} (family={dna.family})"
-        )
+        # If all 5 templates have already been tried, go fully novel
+        if state.templates_exhausted and not state.novel_arch_attempted:
+            logger.info("ARCHITECT: All templates exhausted — designing novel architecture")
+            state.novel_arch_attempted = True
+            dna = self._design_novel_architecture(design_requirements, problem_card)
+            state.thinking_log.append(
+                f"ARCHITECT: Novel design {dna.name} (family={dna.family})"
+            )
+        else:
+            dna = self._choose_template(design_requirements, problem_card)
+            state.thinking_log.append(
+                f"ARCHITECT: Designing {dna.name} (family={dna.family})"
+            )
 
         if design_requirements.get("use_nas", False):
             dna = self.nas.refine_dna(dna, problem_card, n_trials=20)
@@ -132,23 +146,23 @@ class ArchitectAgent:
         physics_failures = {}
         if physics_report:
             physics_failures = {
-                "governing_eq": physics_report.governing_equations_passed,
-                "bc":           physics_report.boundary_conditions_passed,
-                "conservation": physics_report.conservation_passed,
-                "turbulence":   physics_report.turbulence_passed,
+                "equilibrium":   physics_report.equilibrium_passed,
+                "bc":            physics_report.boundary_conditions_passed,
+                "stress_strain": physics_report.stress_strain_passed,
+                "compatibility": physics_report.compatibility_passed,
             }
 
         prompt = f"""
-You are an expert neural architecture designer for CFD/FEA simulation.
+You are an expert neural architecture designer for FEA simulation.
 All standard models have failed. Analyze why and specify what a new model needs.
 
 Problem:
-- Physics type: {problem_card.physics_type.value if problem_card else 'unknown'}
-- Mesh type:    {problem_card.mesh_type.value if problem_card else 'unknown'}
-- Data size:    {problem_card.data_size if problem_card else 0}
-- Re number:    {problem_card.re_number if problem_card else None}
-- Flags:        {problem_card.special_flags if problem_card else []}
-- Turbulence:   {problem_card.turbulence_model if problem_card else None}
+- Physics type:    {problem_card.physics_type.value if problem_card else 'unknown'}
+- Mesh type:       {problem_card.mesh_type.value if problem_card else 'unknown'}
+- Data size:       {problem_card.data_size if problem_card else 0}
+- Material model:  {problem_card.material_model if problem_card else 'linear_elastic'}
+- Flags:           {problem_card.special_flags if problem_card else []}
+- Loading type:    {problem_card.loading_type if problem_card else 'static'}
 
 Failed attempts:
 {json.dumps(failures_summary, indent=2)}
@@ -213,6 +227,129 @@ Output ONLY JSON:
                 hidden_dim=dim, n_layers=n_layers, n_slices=n_slices
             )
 
+    def _design_novel_architecture(self, requirements: dict,
+                                    problem_card) -> ArchitectureDNA:
+        """
+        Ask the LLM to design a completely new block sequence — not from a
+        fixed template. Called only after all 5 standard templates have failed.
+        Returns an ArchitectureDNA built via ArchitectureDNA.from_llm_json().
+        """
+        available_blocks = [bt.value for bt in BlockType]
+
+        # Retrieve similar successful custom DNA via RAG
+        rag_dna_context = ""
+        if self.retriever and self.retriever.ready and problem_card:
+            failed_checks = [
+                k for k, v in requirements.items()
+                if k.startswith("needs_") and v is False
+            ]
+            similar_dna = self.retriever.find_similar_custom_dna(
+                physics_type=problem_card.physics_type.value,
+                failed_checks=failed_checks,
+                top_k=3,
+                min_r2=0.88,
+            )
+            if similar_dna:
+                dna_examples = [
+                    {
+                        "name":       d.get("name", ""),
+                        "blocks":     [b.get("type", "") for b in d.get("core_blocks", [])],
+                        "r2":         round(d.get("r2", 0), 3),
+                        "similarity": round(d.get("similarity", 0), 2),
+                    }
+                    for d in similar_dna
+                ]
+                rag_dna_context = f"""
+SUCCESSFUL CUSTOM ARCHITECTURES FOR SIMILAR PROBLEMS (retrieved from knowledge base):
+{json.dumps(dna_examples, indent=2)}
+
+Build on or improve one of these if the problem is similar, or design something entirely new.
+"""
+
+        prompt = f"""
+You are a world-class neural architecture designer for FEA/CFD surrogate models.
+All 5 standard architectures (PINN, Transolver, FNO, GNN, Hybrid) have failed.
+Design a NOVEL architecture from scratch to solve this problem.
+
+PROBLEM:
+- Physics type:  {problem_card.physics_type.value if problem_card else 'FEA_static_linear'}
+- Mesh type:     {problem_card.mesh_type.value if problem_card else 'unstructured_tet'}
+- Data size:     {problem_card.data_size if problem_card else 0} cases
+- Output targets:{problem_card.output_targets if problem_card else ['displacement', 'stress']}
+
+FAILURE ANALYSIS:
+- Root cause: {requirements.get('root_cause', 'unknown')}
+- Summary:    {requirements.get('summary', 'unknown')}
+- Physics violations: needs_physics_loss={requirements.get('needs_physics_loss', True)}
+- Graph structure needed: {requirements.get('needs_graph_structure', False)}
+- Attention over physics states: {requirements.get('needs_attention_over_physics_states', True)}
+{rag_dna_context}
+AVAILABLE BLOCK TYPES (use ONLY these values):
+{json.dumps(available_blocks, indent=2)}
+
+KEY BLOCK DESCRIPTIONS:
+- "physics_attention": Transolver-style sliced attention, O(S^2) complexity
+- "mamba_block":       State-space model, O(N) complexity — great for large meshes
+- "conv_next_block":   Depthwise Conv1d + LayerNorm — fast local feature extraction
+- "cross_attention":   Cross-attention from learnable physics queries to mesh nodes
+- "fourier_layer":     Spectral multiplication — structured grids only
+- "coord_embed":       Fourier coordinate embedding (ALWAYS include for mesh models)
+- "bc_encoder":        Boundary condition type encoder
+- "graph_conv":        GNN message passing — needs edge_index input
+
+Design an architecture that solves the ROOT CAUSE above.
+Be creative: mix block types in a new way.
+
+Output ONLY valid JSON (no markdown, no explanation):
+{{
+  "name": "CustomNovelNet",
+  "family": "hybrid",
+  "designed_for": "{problem_card.physics_type.value if problem_card else 'FEA'}",
+  "mesh_type": "any",
+  "has_physics_loss": true,
+  "physics_loss_types": ["equilibrium", "bc"],
+  "parent_names": ["Transolver", "Mamba"],
+  "input_blocks": [
+    {{"type": "coord_embed", "hidden_dim": 256}},
+    {{"type": "bc_encoder",  "hidden_dim": 256}}
+  ],
+  "core_blocks": [
+    {{"type": "mamba_block",      "hidden_dim": 256, "dropout": 0.1}},
+    {{"type": "physics_attention","hidden_dim": 256, "n_slices": 32, "n_heads": 8}},
+    {{"type": "cross_attention",  "hidden_dim": 256, "n_heads": 8, "n_queries": 64}}
+  ],
+  "output_blocks": [
+    {{"type": "linear", "hidden_dim": 128}},
+    {{"type": "gelu",   "hidden_dim": 128}},
+    {{"type": "linear", "hidden_dim": 4}}
+  ]
+}}
+"""
+        fallback_dna = hybrid_transolver_pinn_dna(
+            hidden_dim=requirements.get("recommended_hidden_dim", 128),
+            n_layers=requirements.get("recommended_n_layers", 6),
+            n_slices=requirements.get("recommended_n_slices", 16),
+        )
+        fallback_dna.name   = "CustomNovelHybrid"
+        fallback_dna.generation = 2
+
+        try:
+            response = self.llm.invoke(prompt)
+            content  = response.content.strip()
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+            json_dict = json.loads(content)
+            dna = ArchitectureDNA.from_llm_json(json_dict)
+            dna.generation = 2
+            logger.success(f"Novel architecture designed: {dna.name} with "
+                           f"{len(dna.core_blocks)} core blocks")
+            return dna
+        except Exception as e:
+            logger.warning(f"Novel architecture LLM design failed ({e}) — using fallback")
+            return fallback_dna
+
     def _generate_and_validate(
         self, dna: ArchitectureDNA, problem_card
     ) -> Tuple[Optional[torch.nn.Module], ArchitectureDNA, str]:
@@ -221,7 +358,7 @@ Output ONLY JSON:
             "mesh_type":      problem_card.mesh_type.value if problem_card else "",
             "data_size":      problem_card.data_size if problem_card else 0,
             "n_nodes":        problem_card.n_nodes if problem_card else 0,
-            "re_number":      problem_card.re_number if problem_card else None,
+            "material_model": problem_card.material_model if problem_card else "linear_elastic",
             "output_targets": problem_card.output_targets if problem_card else [],
         }
 
