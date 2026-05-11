@@ -82,7 +82,9 @@ class DataAgent:
             loader = self._get_loader(str(f.suffix).lower(), software)
             try:
                 data = loader.load(str(f))
-                if data:
+                if isinstance(data, list):
+                    results.extend(data)   # NumpyLoader returns a list of case dicts
+                elif data:
                     results.append(data)
             except Exception as e:
                 logger.warning(f"Failed to load {f}: {e}")
@@ -104,8 +106,11 @@ class DataAgent:
         if fmt == "csv" and software in ("STAR-CCM+", "STARCCM"):
             from agents.data_agent.starccm_fea_loader import StarCCMFEALoader
             return StarCCMFEALoader()
+        if fmt == "numpy":
+            from agents.data_agent.numpy_loader import NumpyLoader
+            return NumpyLoader()
 
-        # Universal fallback: VTK / HDF5 / CSV / NumPy
+        # Universal fallback: VTK / HDF5 / CSV
         from data.loaders.vtk_loader import VTKLoader
         return VTKLoader()
 
