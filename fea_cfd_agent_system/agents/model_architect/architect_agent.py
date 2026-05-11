@@ -146,23 +146,23 @@ class ArchitectAgent:
         physics_failures = {}
         if physics_report:
             physics_failures = {
-                "governing_eq": physics_report.governing_equations_passed,
-                "bc":           physics_report.boundary_conditions_passed,
-                "conservation": physics_report.conservation_passed,
-                "turbulence":   physics_report.turbulence_passed,
+                "equilibrium":   physics_report.equilibrium_passed,
+                "bc":            physics_report.boundary_conditions_passed,
+                "stress_strain": physics_report.stress_strain_passed,
+                "compatibility": physics_report.compatibility_passed,
             }
 
         prompt = f"""
-You are an expert neural architecture designer for CFD/FEA simulation.
+You are an expert neural architecture designer for FEA simulation.
 All standard models have failed. Analyze why and specify what a new model needs.
 
 Problem:
-- Physics type: {problem_card.physics_type.value if problem_card else 'unknown'}
-- Mesh type:    {problem_card.mesh_type.value if problem_card else 'unknown'}
-- Data size:    {problem_card.data_size if problem_card else 0}
-- Re number:    {problem_card.re_number if problem_card else None}
-- Flags:        {problem_card.special_flags if problem_card else []}
-- Turbulence:   {problem_card.turbulence_model if problem_card else None}
+- Physics type:    {problem_card.physics_type.value if problem_card else 'unknown'}
+- Mesh type:       {problem_card.mesh_type.value if problem_card else 'unknown'}
+- Data size:       {problem_card.data_size if problem_card else 0}
+- Material model:  {problem_card.material_model if problem_card else 'linear_elastic'}
+- Flags:           {problem_card.special_flags if problem_card else []}
+- Loading type:    {problem_card.loading_type if problem_card else 'static'}
 
 Failed attempts:
 {json.dumps(failures_summary, indent=2)}
@@ -358,7 +358,7 @@ Output ONLY valid JSON (no markdown, no explanation):
             "mesh_type":      problem_card.mesh_type.value if problem_card else "",
             "data_size":      problem_card.data_size if problem_card else 0,
             "n_nodes":        problem_card.n_nodes if problem_card else 0,
-            "re_number":      problem_card.re_number if problem_card else None,
+            "material_model": problem_card.material_model if problem_card else "linear_elastic",
             "output_targets": problem_card.output_targets if problem_card else [],
         }
 
