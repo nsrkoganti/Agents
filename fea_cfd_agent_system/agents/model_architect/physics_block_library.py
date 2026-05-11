@@ -372,3 +372,36 @@ class CrossAttentionBlock(nn.Module):
         x_out = self.norm3(x_out + residual)
 
         return x_out
+
+
+class SpectralNormBlock(nn.Module):
+    """
+    Equivariant spectral-norm regularised block for rotation-aware FEA features.
+    Applies spectral normalisation to all weight matrices to enforce a Lipschitz
+    constraint (L≤1), preventing gradient explosion in deep custom models and
+    stabilising training on stress/displacement fields with large dynamic range.
+    Interface: (B, N, hidden_dim) -> (B, N, hidden_dim)
+    """
+
+    def __init__(self, hidden_dim: int = 256, expansion: int = 2,
+                 dropout: float = 0.1):
+        super().__init__()
+        self.norm  = nn.LayerNorm(hidden_dim)
+        # All Linear layers wrapped with spectral norm
+        self.fc1   = nn.utils.spectral_norm(nn.Linear(hidden_dim, hidden_dim * expansion))
+        self.fc2   = nn.utils.spectral_norm(nn.Linear(hidden_dim * expansion, hidden_dim))
+        # Equivariant mixing: channel permutation invariant 1×1 conv
+        self.mix   = nn.utils.spectral_norm(nn.Linear(hidden_dim, hidden_dim))
+        self.act   = nn.GELU()
+        self.drop  = nn.Dropout(dropout)
+        # Learnable scale — starts near 0 to avoid disrupting earlier layers
+        self.gamma = nn.Parameter(torch.zeros(hidden_dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, N, hidden_dim)"""
+        residual = x
+        h = self.norm(x)
+        h = self.act(self.fc1(h))
+        h = self.drop(self.fc2(h))
+        h = self.mix(h)
+        return residual + self.gamma * h

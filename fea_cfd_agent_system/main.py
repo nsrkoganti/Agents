@@ -29,7 +29,15 @@ def load_config(config_path: str = "configs/base_config.yaml") -> dict:
     try:
         import yaml
         with open(config_path) as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+        rag_path = Path(config_path).parent / "rag_config.yaml"
+        try:
+            with open(rag_path) as f:
+                rag_cfg = yaml.safe_load(f)
+            config.update(rag_cfg)
+        except FileNotFoundError:
+            pass
+        return config
     except FileNotFoundError:
         logger.warning(f"Config not found: {config_path} — using defaults")
         return {
